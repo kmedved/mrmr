@@ -16,19 +16,20 @@ setup(
     license='GNU General Public License v3.0',
     packages=['mrmr'],
     install_requires=[
-        'category_encoders',
-        'jinja2',
         'tqdm',
         'joblib',
         'pandas>=1.0.3',
         'numpy>=1.18.1',
         'scikit-learn',
         'scipy',
-        'polars>=0.12.5',
     ],
     extras_require={
+        'categorical': ['category_encoders'],
+        'polars': ['polars>=0.12.5'],
         'pyspark': ['pyspark>=3.4.1'],
-        'bigquery': ['google.cloud.bigquery']
+        'bigquery': ['google-cloud-bigquery', 'jinja2'],
+        'numba': ['numba'],
+        'all': ['category_encoders', 'polars>=0.12.5', 'numba', 'jinja2'],
     },
     zip_safe=False
 )

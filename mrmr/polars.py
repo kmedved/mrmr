@@ -88,7 +88,8 @@ def f_regression(target_column, features, df):
 
 
 def f_classif(target_column, features, df):
-    groupby = df.groupby(target_column, maintain_order = True)
+    groupby_method = getattr(df, "group_by", None) or df.groupby
+    groupby = groupby_method(target_column, maintain_order=True)
     
     avg = groupby \
         .agg([pl.col(feature).mean().alias(feature) for feature in features]) \

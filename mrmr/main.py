@@ -94,6 +94,12 @@ def mrmr_base(K, relevance_func, redundancy_func,
     -------
     selected_features: list of str
         List of selected features.
+
+    Notes
+    -----
+    When return_scores=True, returns (selected_features, relevance, redundancy).
+    The redundancy matrix is recomputed for the selected features only to keep
+    the selection path O(P) in memory.
     """
 
     relevance = relevance_func(**relevance_args)
@@ -102,17 +108,25 @@ def mrmr_base(K, relevance_func, redundancy_func,
     K = min(K, len(features))
 
     # Use numpy arrays for O(P) memory instead of O(P²) DataFrame
-    feature_to_idx = {f: i for i, f in enumerate(features)}
     rel_values = relevance.values.astype(np.float64)
     n_features = len(features)
 
     # Incremental accumulators - O(P) memory
     # For mean: store sum of redundancies, divide by count
     # For max: store running max
-    if denominator_func == np.mean:
+    if denominator_func in (np.mean, np.nanmean):
+        denom_mode = "mean"
         redundancy_sum = np.zeros(n_features, dtype=np.float64)
-    else:  # max
-        redundancy_max = np.full(n_features, FLOOR, dtype=np.float64)
+        redundancy_cnt = np.zeros(n_features, dtype=np.int32)
+    elif denominator_func in (np.max, np.nanmax):
+        denom_mode = "max"
+        redundancy_max = np.zeros(n_features, dtype=np.float64)
+        redundancy_cnt = np.zeros(n_features, dtype=np.int32)
+    else:
+        raise NotImplementedError(
+            "mrmr_base supports denominator_func in {np.mean, np.max} for O(P) memory mode. "
+            "Use a custom selector or store redundancy explicitly for other callables."
+        )
 
     is_candidate = np.ones(n_features, dtype=bool)
     selected_features = []
@@ -127,11 +141,11 @@ def mrmr_base(K, relevance_func, redundancy_func,
         if i == 0:
             scores = rel_values.copy()
         else:
-            if denominator_func == np.mean:
-                denom = redundancy_sum / i
+            if denom_mode == "mean":
+                denom = np.where(redundancy_cnt > 0, redundancy_sum / redundancy_cnt, 1.0)
             else:
-                denom = redundancy_max
-            denom = np.where(denom < FLOOR, FLOOR, denom)
+                denom = np.where(redundancy_cnt > 0, redundancy_max, 1.0)
+            denom = np.maximum(denom, FLOOR)
             scores = rel_values / denom
 
         # Mask out selected features
@@ -165,13 +179,13 @@ def mrmr_base(K, relevance_func, redundancy_func,
                     features=update_names,
                     **redundancy_args
                 ).fillna(FLOOR).abs().clip(FLOOR)
-                new_vals = new_red.reindex(update_names).fillna(FLOOR).to_numpy()
-                if denominator_func == np.mean:
+                new_vals = new_red.reindex(update_names).fillna(FLOOR).to_numpy(dtype=np.float64)
+                if denom_mode == "mean":
                     redundancy_sum[update_indices] += new_vals
+                    redundancy_cnt[update_indices] += 1
                 else:
-                    redundancy_max[update_indices] = np.maximum(
-                        redundancy_max[update_indices], new_vals
-                    )
+                    redundancy_max[update_indices] = np.maximum(redundancy_max[update_indices], new_vals)
+                    redundancy_cnt[update_indices] = 1
         else:
             # Update all candidates
             new_red = redundancy_func(
@@ -179,19 +193,41 @@ def mrmr_base(K, relevance_func, redundancy_func,
                 features=candidate_names,
                 **redundancy_args
             ).fillna(FLOOR).abs().clip(FLOOR)
-            new_vals = new_red.reindex(candidate_names).fillna(FLOOR).to_numpy()
-            if denominator_func == np.mean:
+            new_vals = new_red.reindex(candidate_names).fillna(FLOOR).to_numpy(dtype=np.float64)
+            if denom_mode == "mean":
                 redundancy_sum[candidate_indices] += new_vals
+                redundancy_cnt[candidate_indices] += 1
             else:
-                redundancy_max[candidate_indices] = np.maximum(
-                    redundancy_max[candidate_indices], new_vals
-                )
+                redundancy_max[candidate_indices] = np.maximum(redundancy_max[candidate_indices], new_vals)
+                redundancy_cnt[candidate_indices] = 1
 
     if not return_scores:
         return selected_features
+
+    redundancy = pd.DataFrame(index=features, columns=selected_features, dtype=float)
+    if only_same_domain:
+        feat_domains = {f: f.split("_")[0] for f in features}
+        for selected in selected_features:
+            domain = feat_domains[selected]
+            domain_features = [f for f in features if feat_domains[f] == domain]
+            col = redundancy_func(
+                target_column=selected,
+                features=domain_features,
+                **redundancy_args
+            )
+            redundancy.loc[domain_features, selected] = (
+                col.reindex(domain_features).fillna(0.0).abs().to_numpy()
+            )
     else:
-        # For backward compatibility, return relevance (redundancy matrix no longer stored)
-        return (selected_features, relevance, None)
+        for selected in selected_features:
+            col = redundancy_func(
+                target_column=selected,
+                features=features,
+                **redundancy_args
+            )
+            redundancy[selected] = col.reindex(features).fillna(0.0).abs().to_numpy()
+
+    return (selected_features, relevance, redundancy)
 
 
 def jmi_base(K, relevance_func, joint_mi_func,
