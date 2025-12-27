@@ -25,6 +25,12 @@ def _subsample_xy(X, y, subsample, random_state):
     n = len(X)
     if n <= subsample:
         return X, y
+    import warnings
+    warnings.warn(
+        f"Subsampling from {n} to {subsample} rows. Set subsample=None to use all data.",
+        UserWarning,
+        stacklevel=3,
+    )
     rng = np.random.default_rng(random_state)
     row_idx = rng.choice(n, size=subsample, replace=False)
     X_sub = X.iloc[row_idx] if hasattr(X, "iloc") else X[row_idx]
@@ -39,6 +45,7 @@ def parallel_df(func, df, series, n_jobs, prefer="threads"):
     
     n_jobs = min(cpu_count(), len(df.columns)) if n_jobs == -1 else min(cpu_count(), n_jobs)
     n_jobs = max(1, n_jobs)  # Ensure at least 1 job
+    n_jobs = min(n_jobs, len(df.columns))
     col_chunks = np.array_split(range(len(df.columns)), n_jobs)
     lst = Parallel(n_jobs=n_jobs, prefer=prefer)(
         delayed(func)(df.iloc[:, col_chunk], series)
@@ -112,12 +119,6 @@ def correlation(target_column, features, X, n_jobs=-1, parallel_prefer="threads"
         n_jobs=n_jobs,
         prefer=parallel_prefer,
     )
-
-
-# NOTE: sklearn's mutual_info_regression/classif returns per-feature MI, not joint MI.
-# Using it with [0] gives I(x1; y), completely ignoring x2.
-# The correct joint MI estimators are in fast_mi.py (regression_joint_mi, binned_joint_mi, ksg_joint_mi).
-# For classification, use binned_joint_mi_classif.
 
 
 def binned_joint_mi_classif(
@@ -504,7 +505,7 @@ def mrmr_regression(
             K=K,
             mode=mode,
             method=method,
-            subsample=subsample,
+            subsample=None,
             random_state=random_state,
             show_progress=show_progress,
         )
@@ -552,3 +553,17 @@ def jmi_classif(X, y, K, **kwargs):
 def jmim_classif(X, y, K, **kwargs):
     """Convenience wrapper for JMIM classification."""
     return mrmr_classif(X, y, K, method='jmim', **kwargs)
+
+
+__all__ = [
+    "mrmr_classif",
+    "mrmr_regression",
+    "jmi_classif",
+    "jmi_regression",
+    "jmim_classif",
+    "jmim_regression",
+    "cefsplus_select",
+    "f_classif",
+    "f_regression",
+    "correlation",
+]
