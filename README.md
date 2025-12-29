@@ -90,6 +90,48 @@ selected_stable = stability_regression(
 )
 ```
 
+### Smart sampling (for stability selection)
+
+Smart sampling is an optional, leverage-based subsampler that can reduce the
+data size before running stability selection. It works on pandas DataFrames
+and returns approximate inverse-probability weights internally, so you should
+not pass `sample_weight` when `use_smart_sampler=True`.
+
+```python
+import pandas as pd
+from sklearn.datasets import make_regression
+from sift import StabilitySelector, panel_config
+
+X, y = make_regression(n_samples=10000, n_features=40, n_informative=10, noise=0.3)
+df = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
+df["target"] = y
+df["user_id"] = [f"user_{i % 200}" for i in range(len(df))]
+df["timestamp"] = pd.date_range("2023-01-01", periods=len(df), freq="h")
+
+selector = StabilitySelector(
+    threshold=0.6,
+    use_smart_sampler=True,
+    sampler_config=panel_config("user_id", "timestamp", sample_frac=0.15),
+)
+selector.fit(df, y)
+```
+
+You can also call the sampler directly if you want access to the sampled
+DataFrame and its generated weights:
+
+```python
+from sift import smart_sample
+
+sampled = smart_sample(
+    df,
+    feature_cols=[f"f{i}" for i in range(40)],
+    y_col="target",
+    group_col="user_id",
+    time_col="timestamp",
+    sample_frac=0.15,
+)
+```
+
 ### mRMR with Polars
 
 ```python
