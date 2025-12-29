@@ -361,20 +361,13 @@ def _cefsplus_logdet_select(
         s2 = np.maximum(1.0 - t2, eps)
         Lc = logdet_yS + np.log(s2)
 
-        m_rem = rem.shape[0]
-
-        order_f = np.argsort(Lf, kind="mergesort")
-        gdc_f = np.empty(m_rem, dtype=np.int32)
-        gdc_f[order_f] = np.arange(m_rem, dtype=np.int32)
-
-        order_c = np.argsort(Lc, kind="mergesort")
-        gdc_c = np.empty(m_rem, dtype=np.int32)
-        gdc_c[order_c] = np.arange(m_rem, dtype=np.int32)
-
-        diff = gdc_f - gdc_c
-        best_diff = diff.max()
-        ties = np.where(diff == best_diff)[0]
-
+        # Greedy MI proxy (Gaussian): I(y; S∪{f}) ∝ logdet(R_{S∪{f}}) - logdet(R_{y,S,f})
+        # Maximize (Lf - Lc). This naturally balances redundancy (via det(R_{S∪{f}}))
+        # against relevance (via det(R_{y,S,f})) without rank-noise dominating.
+        score = Lf - Lc
+        best_pos = int(np.argmax(score))
+        best = score[best_pos]
+        ties = np.where(np.isclose(score, best, rtol=1e-10, atol=1e-12))[0]
         if ties.size == 1:
             best_pos = int(ties[0])
         else:

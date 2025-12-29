@@ -80,3 +80,43 @@ def test_binned_mi_increases_with_dependence():
     mi_dependent = _binned_mi_single(x1, x2, y_dependent)
 
     assert mi_dependent > mi_independent * 1.5
+
+
+def test_cefsplus_not_garbage_on_make_regression():
+    from sklearn.datasets import make_regression
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import mean_squared_error
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import StandardScaler
+
+    X, y = make_regression(
+        n_samples=1000,
+        n_features=50,
+        n_informative=10,
+        noise=0.2,
+        random_state=42,
+    )
+    X = pd.DataFrame(
+        X,
+        columns=[f"f_{i}" for i in range(X.shape[1])],
+        dtype=np.float32,
+    )
+    y = pd.Series(y, dtype=np.float32)
+
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+    )
+
+    feats = sift.cefsplus_regression(X_tr, y_tr, K=10, subsample=None, random_state=0)
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(X_tr[feats])
+    Xte = scaler.transform(X_te[feats])
+
+    rmse = mean_squared_error(
+        y_te,
+        Ridge(alpha=1.0).fit(Xtr, y_tr).predict(Xte),
+    ) ** 0.5
+    assert rmse < 2.0
