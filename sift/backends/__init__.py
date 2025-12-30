@@ -1,3 +1,3 @@
-from sift.backends import pandas
+from . import pandas
 
 __all__ = ["pandas"]
