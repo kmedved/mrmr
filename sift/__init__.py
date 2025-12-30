@@ -88,11 +88,4 @@ __all__ = [
     "smart_sample",
     "panel_config",
     "cross_section_config",
-    # Lazy (catboost)
-    "catboost_select",
-    "catboost_regression",
-    "catboost_classif",
-    "CatBoostSelectionResult",
-    # Lazy (polars)
-    "polars",
 ]

@@ -357,7 +357,4 @@ __all__ = [
     "jmim_classif",
     "jmim_regression",
     "cefsplus_select",
-    "f_classif",
-    "f_regression",
-    "correlation",
 ]
