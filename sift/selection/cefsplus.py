@@ -141,7 +141,7 @@ def cefsplus_loop(
 
         j = rem[best_pos]
 
-        b = B[:, best_pos].reshape(-1, 1)
+        b = B[:, best_pos].copy().reshape(-1, 1)
         v = inv_S @ b
         s1_best = s1[best_pos]
 
@@ -156,7 +156,7 @@ def cefsplus_loop(
         inv_S = inv_S_new
         logdet_S += np.log(s1_best)
 
-        b2 = B2[:, best_pos].reshape(-1, 1)
+        b2 = B2[:, best_pos].copy().reshape(-1, 1)
         v2 = inv_yS @ b2
         s2_best = s2[best_pos]
 
