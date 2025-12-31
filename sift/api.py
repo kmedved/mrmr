@@ -127,6 +127,9 @@ def _mrmr_classic(
     if isinstance(X, pd.DataFrame) and cat_features is None:
         cat_features = X.select_dtypes(include=["object", "category", "string"]).columns.tolist()
 
+    if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
+        raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
+
     if cat_features and cat_encoding != "none":
         X = encode_categoricals(X, y, cat_features, cat_encoding)
 
