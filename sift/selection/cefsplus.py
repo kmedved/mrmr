@@ -141,7 +141,7 @@ def cefsplus_loop(
 
         j = rem[best_pos]
 
-        b = B[:, best_pos].reshape(-1, 1)
+        b = B[:, best_pos].copy().reshape(-1, 1)
         v = inv_S @ b
         s1_best = s1[best_pos]
 
@@ -156,7 +156,7 @@ def cefsplus_loop(
         inv_S = inv_S_new
         logdet_S += np.log(s1_best)
 
-        b2 = B2[:, best_pos].reshape(-1, 1)
+        b2 = B2[:, best_pos].copy().reshape(-1, 1)
         v2 = inv_yS @ b2
         s2_best = s2[best_pos]
 
@@ -207,14 +207,14 @@ def select_cached(
     else:
         cand = np.arange(p_valid)
 
-    Z_cand = cache.Z[:, cand]
-    R_cand = correlation_matrix_fast(Z_cand.astype(np.float64))
+    Z_cand = np.ascontiguousarray(cache.Z[:, cand], dtype=np.float64)
+    R_cand = correlation_matrix_fast(Z_cand)
 
     keep = greedy_corr_prune(np.arange(len(cand)), R_cand, np.abs(r[cand]), corr_prune)
     cand = cand[keep]
     R_cand = R_cand[np.ix_(keep, keep)]
-    r_cand = r[cand]
-    rel_cand = rel[cand]
+    r_cand = r[cand].astype(np.float64)
+    rel_cand = rel[cand].astype(np.float64)
 
     k_actual = min(k, len(cand))
 

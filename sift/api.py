@@ -177,6 +177,9 @@ def _mrmr_gaussian(
     if isinstance(X, pd.DataFrame) and cat_features is None:
         cat_features = X.select_dtypes(include=["object", "category", "string"]).columns.tolist()
 
+    if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
+        raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
+
     if cat_features and cat_encoding != "none":
         X = encode_categoricals(X, y, cat_features, cat_encoding)
     if verbose:
@@ -215,6 +218,8 @@ def select_jmi(
             cat_features = X.select_dtypes(
                 include=["object", "category", "string"]
             ).columns.tolist()
+        if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
+            raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
         if cat_features and cat_encoding != "none":
             X = encode_categoricals(X, y, cat_features, cat_encoding)
         if verbose:
@@ -268,6 +273,8 @@ def select_jmim(
             cat_features = X.select_dtypes(
                 include=["object", "category", "string"]
             ).columns.tolist()
+        if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
+            raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
         if cat_features and cat_encoding != "none":
             X = encode_categoricals(X, y, cat_features, cat_encoding)
         if verbose:
@@ -387,7 +394,8 @@ def select_cefsplus(
         cat_features = X.select_dtypes(include=["object", "category", "string"]).columns.tolist()
     if cat_features and cat_encoding != "none":
         X = encode_categoricals(X, y, cat_features, cat_encoding)
-    validate_inputs(X, y, task="regression")
+    if verbose:
+        print(f"CEFS+: selecting {k} features (top_m={top_m}, corr_prune={corr_prune})")
     cache = build_cache(X, subsample=subsample, random_state=random_state)
     return select_cached(
         cache,
