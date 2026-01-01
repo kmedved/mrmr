@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Tuple, Union
+from typing import Optional, List, Tuple, Union, Iterator, Literal
 import warnings
 
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -12,6 +12,154 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from joblib import Parallel, delayed
 
 from sift.sampling.smart import SmartSamplerConfig, smart_sample
+
+
+# =============================================================================
+# Block Bootstrap Sampling
+# =============================================================================
+
+
+def _block_bootstrap_indices(
+    n: int,
+    n_bootstrap: int,
+    groups: Optional[np.ndarray] = None,
+    time: Optional[np.ndarray] = None,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "moving",
+    y: Optional[np.ndarray] = None,
+    task: str = "regression",
+    random_state: Optional[int] = None,
+    min_oob: int = 10,
+) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Generate block bootstrap train/val indices respecting time structure.
+
+    For each group (e.g., player):
+    1. Sort rows by time
+    2. Sample contiguous blocks with replacement
+    3. OOB rows become validation
+
+    Parameters
+    ----------
+    n : int
+        Total number of samples.
+    n_bootstrap : int
+        Number of bootstrap iterations.
+    groups : ndarray, optional
+        Group labels (e.g., player_id). If None, treats all rows as one group.
+    time : ndarray, optional
+        Time ordering values. Required for block methods.
+    block_size : int or "auto"
+        If "auto", uses sqrt(n_per_group) as rule of thumb.
+    block_method : str
+        - "moving": sample start points, take consecutive blocks
+        - "circular": wrap around at boundaries
+        - "stationary": random block lengths (geometric distribution)
+    y : ndarray, optional
+        Target values (for stratification in classification).
+    task : str
+        "regression" or "classification".
+    random_state : int, optional
+        Random seed.
+    min_oob : int
+        Minimum number of OOB samples required.
+
+    Yields
+    ------
+    train_idx : ndarray
+        In-bag sample indices.
+    val_idx : ndarray
+        Out-of-bag sample indices.
+    """
+    rng = np.random.default_rng(random_state)
+
+    # If no groups, treat all as one group
+    if groups is None:
+        groups = np.zeros(n, dtype=np.int64)
+
+    unique_groups = np.unique(groups)
+
+    for _ in range(n_bootstrap):
+        train_indices = []
+        all_group_indices = []
+
+        for g in unique_groups:
+            g_mask = groups == g
+            g_idx = np.where(g_mask)[0]
+            n_g = len(g_idx)
+            all_group_indices.extend(g_idx.tolist())
+
+            if n_g == 0:
+                continue
+
+            # Sort by time if available
+            if time is not None:
+                order = np.argsort(time[g_idx])
+                g_idx_sorted = g_idx[order]
+            else:
+                g_idx_sorted = g_idx
+
+            # Determine block size
+            if isinstance(block_size, str) and block_size == "auto":
+                b_size = max(1, int(np.sqrt(n_g)))
+            else:
+                b_size = max(1, min(int(block_size), n_g))
+
+            # Number of blocks needed to cover the group
+            n_blocks_needed = max(1, int(np.ceil(n_g / b_size)))
+
+            if block_method == "moving":
+                # Moving block bootstrap: sample start points uniformly
+                sampled_blocks = []
+                for _ in range(n_blocks_needed):
+                    max_start = max(0, n_g - b_size)
+                    start = rng.integers(0, max_start + 1)
+                    end = min(start + b_size, n_g)
+                    sampled_blocks.append(g_idx_sorted[start:end])
+                train_indices.extend(np.concatenate(sampled_blocks).tolist())
+
+            elif block_method == "circular":
+                # Circular block bootstrap: wrap around at boundaries
+                sampled_blocks = []
+                for _ in range(n_blocks_needed):
+                    start = rng.integers(0, n_g)
+                    block_indices = [(start + i) % n_g for i in range(b_size)]
+                    sampled_blocks.append(g_idx_sorted[block_indices])
+                train_indices.extend(np.concatenate(sampled_blocks).tolist())
+
+            elif block_method == "stationary":
+                # Stationary bootstrap: geometric block lengths
+                p = 1.0 / b_size  # Expected block length = 1/p = b_size
+                sampled_indices = []
+                i = 0
+                while len(sampled_indices) < n_g:
+                    # Start a new block at random position
+                    start = rng.integers(0, n_g)
+                    # Sample block length from geometric distribution
+                    block_len = rng.geometric(p)
+                    for j in range(block_len):
+                        if len(sampled_indices) >= n_g:
+                            break
+                        idx = (start + j) % n_g
+                        sampled_indices.append(g_idx_sorted[idx])
+                train_indices.extend(sampled_indices[:n_g])
+
+        # Get unique train indices (in-bag)
+        train_idx = np.unique(np.array(train_indices))
+
+        # OOB = all group indices minus in-bag
+        all_idx = np.array(all_group_indices)
+        oob_mask = ~np.isin(all_idx, train_idx)
+        val_idx = all_idx[oob_mask]
+
+        # Ensure minimum OOB samples
+        if len(val_idx) < min_oob:
+            # Fallback: randomly select some train samples for validation
+            n_need = min_oob - len(val_idx)
+            extra_val = rng.choice(train_idx, size=min(n_need, len(train_idx)), replace=False)
+            val_idx = np.concatenate([val_idx, extra_val])
+
+        yield train_idx, val_idx
 
 
 # =============================================================================
@@ -65,6 +213,14 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         Random seed for reproducibility.
     verbose : bool, default=True
         Print progress information.
+    time_col : str, optional
+        Column name for time ordering (used with block bootstrap).
+    group_col : str, optional
+        Column name for group labels (used with block bootstrap).
+    block_size : int or "auto", default="auto"
+        Block size for block bootstrap. "auto" uses sqrt(n_per_group).
+    block_method : str, default="iid"
+        Bootstrap method: "iid" (standard), "moving", "circular", or "stationary".
 
     Attributes
     ----------
@@ -98,7 +254,11 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         n_jobs: int = -1,
         parallel_backend: str = 'threads',
         random_state: Optional[int] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        time_col: Optional[str] = None,
+        group_col: Optional[str] = None,
+        block_size: Union[int, str] = "auto",
+        block_method: str = "iid",
     ):
         self.n_bootstrap = n_bootstrap
         self.sample_frac = sample_frac
@@ -115,6 +275,10 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         self.parallel_backend = parallel_backend
         self.random_state = random_state
         self.verbose = verbose
+        self.time_col = time_col
+        self.group_col = group_col
+        self.block_size = block_size
+        self.block_method = block_method
 
     def fit(
         self,
@@ -174,8 +338,9 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
 
         if self.verbose:
             task_str = 'classification' if self.task == 'classification' else 'regression'
+            block_str = f", block={self.block_method}" if self.block_method != "iid" else ""
             print(f"Stability selection ({task_str}): {self.n_bootstrap} bootstraps, "
-                  f"α={self.alpha_:.4f}, threshold={self.threshold}")
+                  f"α={self.alpha_:.4f}, threshold={self.threshold}{block_str}")
 
         # Bootstrap
         rng = np.random.default_rng(self.random_state)
@@ -188,9 +353,40 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         task = self.task
         coef_threshold = self.coef_threshold
 
+        # Check for block bootstrap
+        use_block_bootstrap = self.block_method != "iid"
+
+        # Extract group and time info if using block bootstrap
+        if use_block_bootstrap:
+            groups = self._groups if hasattr(self, '_groups') else None
+            time_arr = self._time if hasattr(self, '_time') else None
+
+            if groups is None and time_arr is None:
+                warnings.warn(
+                    f"block_method='{self.block_method}' specified but no group/time info. "
+                    "Falling back to iid bootstrap."
+                )
+                use_block_bootstrap = False
+
+        # Pre-generate block bootstrap indices if needed
+        block_bootstrap_indices = None
+        if use_block_bootstrap:
+            block_bootstrap_indices = list(_block_bootstrap_indices(
+                n=n,
+                n_bootstrap=self.n_bootstrap,
+                groups=groups,
+                time=time_arr,
+                block_size=self.block_size,
+                block_method=self.block_method,
+                y=y,
+                task=self.task,
+                random_state=self.random_state,
+                min_oob=10,
+            ))
+
         # For classification, we need stratified sampling to avoid single-class subsamples
         is_classification = task == 'classification'
-        if is_classification:
+        if is_classification and not use_block_bootstrap:
             classes = np.unique(y)
             n_classes = len(classes)
             # Pre-compute indices per class for stratified sampling
@@ -200,6 +396,16 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
             # Ensure subsample_size >= n_classes
             if subsample_size < n_classes:
                 subsample_size = n_classes
+        elif is_classification:
+            classes = np.unique(y)
+            n_classes = len(classes)
+            class_indices = None
+            class_counts = None
+        else:
+            classes = None
+            n_classes = None
+            class_indices = None
+            class_counts = None
 
         def _stratified_indices(rng_local, subsample_size):
             """Get stratified sample indices that sum to exactly subsample_size."""
@@ -247,13 +453,21 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
             ]
             return np.concatenate(idx_list)
 
-        def single_run(seed):
-            rng_local = np.random.default_rng(seed)
-
-            if is_classification:
-                idx = _stratified_indices(rng_local, subsample_size)
+        def single_run(seed_or_idx):
+            # If using block bootstrap, seed_or_idx is the bootstrap index
+            # Otherwise, it's the random seed
+            if use_block_bootstrap:
+                bootstrap_idx_num = seed_or_idx
+                idx, _ = block_bootstrap_indices[bootstrap_idx_num]
+                seed = seeds[bootstrap_idx_num]
             else:
-                idx = rng_local.choice(n, size=subsample_size, replace=False)
+                seed = seed_or_idx
+                rng_local = np.random.default_rng(seed)
+
+                if is_classification:
+                    idx = _stratified_indices(rng_local, subsample_size)
+                else:
+                    idx = rng_local.choice(n, size=subsample_size, replace=False)
 
             if task == 'classification':
                 # C = 1/alpha for LogisticRegression
@@ -308,10 +522,16 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         bootstrap_idx = 0
         for chunk_start in range(0, self.n_bootstrap, chunk_size):
             chunk_end = min(chunk_start + chunk_size, self.n_bootstrap)
-            chunk_seeds = seeds[chunk_start:chunk_end]
+
+            if use_block_bootstrap:
+                # Pass bootstrap indices for block bootstrap
+                chunk_args = list(range(chunk_start, chunk_end))
+            else:
+                # Pass seeds for iid bootstrap
+                chunk_args = seeds[chunk_start:chunk_end]
 
             chunk_results = Parallel(n_jobs=self.n_jobs, prefer=self.parallel_backend)(
-                delayed(single_run)(seed) for seed in chunk_seeds
+                delayed(single_run)(arg) for arg in chunk_args
             )
 
             # Aggregate this chunk immediately, then discard
@@ -362,11 +582,32 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
             if self.sampler_config.time_col:
                 exclude.add(self.sampler_config.time_col)
 
+        # Also exclude block bootstrap columns
+        if self.group_col:
+            exclude.add(self.group_col)
+        if self.time_col:
+            exclude.add(self.time_col)
+
+        # Extract group and time arrays for block bootstrap
         if isinstance(X, pd.DataFrame):
+            if self.group_col and self.group_col in X.columns:
+                group_vals = X[self.group_col].values
+                # Encode to integers
+                _, self._groups = np.unique(group_vals, return_inverse=True)
+            else:
+                self._groups = None
+
+            if self.time_col and self.time_col in X.columns:
+                self._time = X[self.time_col].values.astype(np.float64)
+            else:
+                self._time = None
+
             feature_names = feature_names or [c for c in X.columns if c not in exclude]
             X = X[feature_names].values
         else:
             feature_names = feature_names or [f"x{i}" for i in range(X.shape[1])]
+            self._groups = None
+            self._time = None
 
         if isinstance(y, pd.Series):
             y = y.values
@@ -906,6 +1147,10 @@ def stability_regression(
     n_jobs: int = -1,
     verbose: bool = True,
     return_indices: Optional[bool] = None,
+    time_col: Optional[str] = None,
+    group_col: Optional[str] = None,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "iid",
 ) -> Union[List[str], List[int]]:
     """
     Stability selection for regression.
@@ -944,6 +1189,14 @@ def stability_regression(
     return_indices : bool, optional
         If True, return feature indices. If False, return feature names.
         If None, returns names for DataFrame inputs and indices for ndarray inputs.
+    time_col : str, optional
+        Column name for time ordering (used with block bootstrap).
+    group_col : str, optional
+        Column name for group labels (used with block bootstrap).
+    block_size : int or "auto", default="auto"
+        Block size for block bootstrap. "auto" uses sqrt(n_per_group).
+    block_method : str, default="iid"
+        Bootstrap method: "iid" (standard), "moving", "circular", or "stationary".
 
     Returns
     -------
@@ -963,6 +1216,10 @@ def stability_regression(
         random_state=random_state,
         n_jobs=n_jobs,
         verbose=verbose,
+        time_col=time_col,
+        group_col=group_col,
+        block_size=block_size,
+        block_method=block_method,
     )
     selector.fit(X, y)
     if return_indices is None:
@@ -986,6 +1243,10 @@ def stability_classif(
     n_jobs: int = -1,
     verbose: bool = True,
     return_indices: Optional[bool] = None,
+    time_col: Optional[str] = None,
+    group_col: Optional[str] = None,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "iid",
 ) -> Union[List[str], List[int]]:
     """
     Stability selection for classification.
@@ -1022,6 +1283,14 @@ def stability_classif(
     return_indices : bool, optional
         If True, return feature indices. If False, return feature names.
         If None, returns names for DataFrame inputs and indices for ndarray inputs.
+    time_col : str, optional
+        Column name for time ordering (used with block bootstrap).
+    group_col : str, optional
+        Column name for group labels (used with block bootstrap).
+    block_size : int or "auto", default="auto"
+        Block size for block bootstrap. "auto" uses sqrt(n_per_group).
+    block_method : str, default="iid"
+        Bootstrap method: "iid" (standard), "moving", "circular", or "stationary".
 
     Returns
     -------
@@ -1040,6 +1309,10 @@ def stability_classif(
         random_state=random_state,
         n_jobs=n_jobs,
         verbose=verbose,
+        time_col=time_col,
+        group_col=group_col,
+        block_size=block_size,
+        block_method=block_method,
     )
     selector.fit(X, y)
     if return_indices is None:

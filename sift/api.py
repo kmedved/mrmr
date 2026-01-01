@@ -41,13 +41,14 @@ def _prepare_xy_classic(
     cat_encoding: CatEncoding,
     subsample: Optional[int],
     random_state: int,
+    sample_weight: Optional[np.ndarray] = None,
 ):
     """
     Shared preparation for 'classic' selectors:
     - infer cat_features for DataFrames
     - optional categorical encoding
     - validate_inputs + subsample_xy
-    Returns: (X_arr, y_arr, feature_names)
+    Returns: (X_arr, y_arr, feature_names, sample_weight_arr)
     """
     if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
         raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
@@ -59,8 +60,25 @@ def _prepare_xy_classic(
         X = encode_categoricals(X, y, cat_features, cat_encoding)
 
     X_arr, y_arr, feature_names = validate_inputs(X, y, task)
-    X_arr, y_arr = subsample_xy(X_arr, y_arr, subsample, random_state)
-    return X_arr, y_arr, feature_names
+
+    # Handle sample weights
+    if sample_weight is not None:
+        w_arr = np.asarray(sample_weight, dtype=np.float64)
+        if len(w_arr) != len(X_arr):
+            raise ValueError(f"sample_weight has {len(w_arr)} elements but X has {len(X_arr)} rows")
+    else:
+        w_arr = None
+
+    # Subsample together
+    if subsample is not None and len(X_arr) > subsample:
+        rng = np.random.default_rng(random_state)
+        idx = rng.choice(len(X_arr), size=subsample, replace=False)
+        X_arr = X_arr[idx]
+        y_arr = y_arr[idx]
+        if w_arr is not None:
+            w_arr = w_arr[idx]
+
+    return X_arr, y_arr, feature_names, w_arr
 
 
 def select_mrmr(
@@ -77,6 +95,7 @@ def select_mrmr(
     cat_encoding: CatEncoding = "loo",
     subsample: Optional[int] = 50_000,
     random_state: int = 0,
+    sample_weight: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> List[str]:
     """
@@ -102,6 +121,8 @@ def select_mrmr(
         - "difference": rel - mean(red)
     top_m : int, optional
         Prefilter to top_m features by relevance. Default: max(5*k, 250).
+    sample_weight : array-like, optional
+        Sample weights. If provided, uses weighted relevance and redundancy.
 
     Returns
     -------
@@ -120,6 +141,7 @@ def select_mrmr(
             cat_encoding,
             subsample,
             random_state,
+            sample_weight,
             verbose,
         )
 
@@ -135,6 +157,7 @@ def select_mrmr(
         cat_encoding,
         subsample,
         random_state,
+        sample_weight,
         verbose,
     )
 
@@ -151,10 +174,11 @@ def _mrmr_classic(
     cat_encoding,
     subsample,
     random_state,
+    sample_weight,
     verbose,
 ):
     """Classic mRMR implementation."""
-    X_arr, y_arr, feature_names = _prepare_xy_classic(
+    X_arr, y_arr, feature_names, w_arr = _prepare_xy_classic(
         X,
         y,
         task=task,
@@ -162,16 +186,31 @@ def _mrmr_classic(
         cat_encoding=cat_encoding,
         subsample=subsample,
         random_state=random_state,
+        sample_weight=sample_weight,
     )
 
-    if task == "regression":
-        rel_funcs = {"f": rel_est.f_regression, "rf": rel_est.rf_regression}
+    # Use weighted or unweighted relevance functions
+    if w_arr is not None:
+        if task == "regression":
+            rel_funcs = {
+                "f": lambda X, y: rel_est.f_regression_weighted(X, y, w_arr),
+                "rf": rel_est.rf_regression,  # RF doesn't support weights here
+            }
+        else:
+            rel_funcs = {
+                "f": lambda X, y: rel_est.f_classif_weighted(X, y, w_arr),
+                "ks": rel_est.ks_classif,  # KS doesn't support weights
+                "rf": rel_est.rf_classif,  # RF doesn't support weights here
+            }
     else:
-        rel_funcs = {
-            "f": rel_est.f_classif,
-            "ks": rel_est.ks_classif,
-            "rf": rel_est.rf_classif,
-        }
+        if task == "regression":
+            rel_funcs = {"f": rel_est.f_regression, "rf": rel_est.rf_regression}
+        else:
+            rel_funcs = {
+                "f": rel_est.f_classif,
+                "ks": rel_est.ks_classif,
+                "rf": rel_est.rf_classif,
+            }
 
     if relevance_method not in rel_funcs:
         raise ValueError(
@@ -184,9 +223,10 @@ def _mrmr_classic(
     top_m = _default_top_m(top_m, k)
 
     if verbose:
-        print(f"mRMR classic: selecting {k} features from {X_arr.shape[1]} (top_m={top_m})")
+        weighted_str = " (weighted)" if w_arr is not None else ""
+        print(f"mRMR classic{weighted_str}: selecting {k} features from {X_arr.shape[1]} (top_m={top_m})")
 
-    selected_idx = mrmr_select(X_arr, rel, k, formula=formula, top_m=top_m)
+    selected_idx = mrmr_select(X_arr, rel, k, formula=formula, top_m=top_m, sample_weight=w_arr)
 
     return [feature_names[i] for i in selected_idx]
 
@@ -201,6 +241,7 @@ def _mrmr_gaussian(
     cat_encoding,
     subsample,
     random_state,
+    sample_weight,
     verbose,
 ):
     """Gaussian mRMR via cached selection."""
@@ -213,8 +254,9 @@ def _mrmr_gaussian(
     if cat_features and cat_encoding != "none":
         X = encode_categoricals(X, y, cat_features, cat_encoding)
     if verbose:
-        print(f"mRMR gaussian: selecting {k} features (top_m={top_m})")
-    cache = build_cache(X, subsample=subsample, random_state=random_state)
+        weighted_str = " (weighted)" if sample_weight is not None else ""
+        print(f"mRMR gaussian{weighted_str}: selecting {k} features (top_m={top_m})")
+    cache = build_cache(X, subsample=subsample, random_state=random_state, sample_weight=sample_weight)
     method = "mrmr_quot" if formula == "quotient" else "mrmr_diff"
     return select_cached(cache, y, k, method=method, top_m=top_m)
 
@@ -232,12 +274,18 @@ def select_jmi(
     cat_encoding: CatEncoding = "loo",
     subsample: Optional[int] = 50_000,
     random_state: int = 0,
+    sample_weight: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> List[str]:
     """
     Joint Mutual Information feature selection.
 
     score(f) = Σ_{s ∈ S} I(f, s; y)
+
+    Parameters
+    ----------
+    sample_weight : array-like, optional
+        Sample weights. If provided, uses weighted relevance and cache.
     """
     estimator = resolve_jmi_estimator(estimator, task)
 
@@ -253,8 +301,9 @@ def select_jmi(
         if cat_features and cat_encoding != "none":
             X = encode_categoricals(X, y, cat_features, cat_encoding)
         if verbose:
-            print(f"JMI gaussian: selecting {k} features (top_m={top_m})")
-        cache = build_cache(X, subsample=subsample, random_state=random_state)
+            weighted_str = " (weighted)" if sample_weight is not None else ""
+            print(f"JMI gaussian{weighted_str}: selecting {k} features (top_m={top_m})")
+        cache = build_cache(X, subsample=subsample, random_state=random_state, sample_weight=sample_weight)
         return select_cached(cache, y, k, method="jmi", top_m=top_m)
 
     return _jmi_classic(
@@ -270,6 +319,7 @@ def select_jmi(
         cat_encoding,
         subsample,
         random_state,
+        sample_weight,
         verbose,
     )
 
@@ -287,12 +337,18 @@ def select_jmim(
     cat_encoding: CatEncoding = "loo",
     subsample: Optional[int] = 50_000,
     random_state: int = 0,
+    sample_weight: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> List[str]:
     """
     JMI Maximization — conservative variant.
 
     score(f) = min_{s ∈ S} I(f, s; y)
+
+    Parameters
+    ----------
+    sample_weight : array-like, optional
+        Sample weights. If provided, uses weighted relevance and cache.
     """
     estimator = resolve_jmi_estimator(estimator, task)
 
@@ -308,8 +364,9 @@ def select_jmim(
         if cat_features and cat_encoding != "none":
             X = encode_categoricals(X, y, cat_features, cat_encoding)
         if verbose:
-            print(f"JMIM gaussian: selecting {k} features (top_m={top_m})")
-        cache = build_cache(X, subsample=subsample, random_state=random_state)
+            weighted_str = " (weighted)" if sample_weight is not None else ""
+            print(f"JMIM gaussian{weighted_str}: selecting {k} features (top_m={top_m})")
+        cache = build_cache(X, subsample=subsample, random_state=random_state, sample_weight=sample_weight)
         return select_cached(cache, y, k, method="jmim", top_m=top_m)
 
     return _jmi_classic(
@@ -325,6 +382,7 @@ def select_jmim(
         cat_encoding,
         subsample,
         random_state,
+        sample_weight,
         verbose,
     )
 
@@ -342,10 +400,11 @@ def _jmi_classic(
     cat_encoding,
     subsample,
     random_state,
+    sample_weight,
     verbose,
 ):
     """Classic JMI/JMIM implementation."""
-    X_arr, y_arr, feature_names = _prepare_xy_classic(
+    X_arr, y_arr, feature_names, w_arr = _prepare_xy_classic(
         X,
         y,
         task=task,
@@ -353,16 +412,31 @@ def _jmi_classic(
         cat_encoding=cat_encoding,
         subsample=subsample,
         random_state=random_state,
+        sample_weight=sample_weight,
     )
 
-    if task == "regression":
-        rel_funcs = {"f": rel_est.f_regression, "rf": rel_est.rf_regression}
+    # Use weighted or unweighted relevance functions
+    if w_arr is not None:
+        if task == "regression":
+            rel_funcs = {
+                "f": lambda X, y: rel_est.f_regression_weighted(X, y, w_arr),
+                "rf": rel_est.rf_regression,
+            }
+        else:
+            rel_funcs = {
+                "f": lambda X, y: rel_est.f_classif_weighted(X, y, w_arr),
+                "ks": rel_est.ks_classif,
+                "rf": rel_est.rf_classif,
+            }
     else:
-        rel_funcs = {
-            "f": rel_est.f_classif,
-            "ks": rel_est.ks_classif,
-            "rf": rel_est.rf_classif,
-        }
+        if task == "regression":
+            rel_funcs = {"f": rel_est.f_regression, "rf": rel_est.rf_regression}
+        else:
+            rel_funcs = {
+                "f": rel_est.f_classif,
+                "ks": rel_est.ks_classif,
+                "rf": rel_est.rf_classif,
+            }
 
     if relevance_method not in rel_funcs:
         raise ValueError(
@@ -379,7 +453,8 @@ def _jmi_classic(
 
     if verbose:
         method = "JMIM" if use_min else "JMI"
-        print(f"{method} classic: selecting {k} features from {X_arr.shape[1]} (top_m={top_m})")
+        weighted_str = " (weighted)" if w_arr is not None else ""
+        print(f"{method} classic{weighted_str}: selecting {k} features from {X_arr.shape[1]} (top_m={top_m})")
 
     selected_idx = jmi_select(
         X_arr,
@@ -406,12 +481,18 @@ def select_cefsplus(
     cat_encoding: CatEncoding = "loo",
     subsample: Optional[int] = 50_000,
     random_state: int = 0,
+    sample_weight: Optional[np.ndarray] = None,
     verbose: bool = True,
 ) -> List[str]:
     """
     CEFS+ feature selection using log-det Gaussian MI proxy.
 
     REGRESSION ONLY.
+
+    Parameters
+    ----------
+    sample_weight : array-like, optional
+        Sample weights. If provided, uses weighted cache building.
     """
     if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
         raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
@@ -429,8 +510,9 @@ def select_cefsplus(
         raise ValueError("Non-finite values in y are not allowed for regression.")
     top_m = _default_top_m(top_m, k)
     if verbose:
-        print(f"CEFS+: selecting {k} features (top_m={top_m}, corr_prune={corr_prune})")
-    cache = build_cache(X, subsample=subsample, random_state=random_state)
+        weighted_str = " (weighted)" if sample_weight is not None else ""
+        print(f"CEFS+{weighted_str}: selecting {k} features (top_m={top_m}, corr_prune={corr_prune})")
+    cache = build_cache(X, subsample=subsample, random_state=random_state, sample_weight=sample_weight)
     return select_cached(
         cache,
         y,

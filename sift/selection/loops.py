@@ -57,6 +57,180 @@ def _corr_with_last(Z: np.ndarray, last_idx: int, p: int) -> np.ndarray:
 
 
 @njit(cache=True)
+def _corr_with_last_weighted(
+    Z: np.ndarray, last_idx: int, p: int, w: np.ndarray
+) -> np.ndarray:
+    """
+    Weighted correlation of each column with column last_idx.
+
+    Parameters
+    ----------
+    Z : ndarray of shape (n, p)
+        Standardized feature matrix.
+    last_idx : int
+        Index of the reference column.
+    p : int
+        Number of columns.
+    w : ndarray of shape (n,)
+        Sample weights.
+
+    Returns
+    -------
+    ndarray of shape (p,)
+        Absolute weighted correlations.
+    """
+    n = Z.shape[0]
+    corrs = np.empty(p, dtype=np.float64)
+
+    # Compute sum of weights
+    w_sum = 0.0
+    for i in range(n):
+        w_sum += w[i]
+
+    for j in range(p):
+        wcov = 0.0
+        for i in range(n):
+            wcov += w[i] * Z[i, j] * Z[i, last_idx]
+        corrs[j] = np.abs(wcov / w_sum)
+
+    return corrs
+
+
+@njit(cache=True)
+def _standardize_columns_weighted(X: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """
+    Weighted standardization of columns to zero weighted mean and unit weighted variance.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Feature matrix.
+    w : ndarray of shape (n,)
+        Sample weights.
+
+    Returns
+    -------
+    ndarray of shape (n, p)
+        Weighted standardized features.
+    """
+    n, p = X.shape
+    if n < 2:
+        return np.zeros_like(X)
+
+    # Sum of weights
+    w_sum = 0.0
+    for i in range(n):
+        w_sum += w[i]
+
+    Z = np.empty((n, p), dtype=np.float64)
+
+    for j in range(p):
+        # Weighted mean
+        wmean = 0.0
+        for i in range(n):
+            wmean += w[i] * X[i, j]
+        wmean /= w_sum
+
+        # Weighted variance
+        wvar = 0.0
+        for i in range(n):
+            wvar += w[i] * (X[i, j] - wmean) ** 2
+        wvar /= w_sum
+        wstd = np.sqrt(wvar)
+
+        if wstd < 1e-12:
+            for i in range(n):
+                Z[i, j] = 0.0
+        else:
+            for i in range(n):
+                Z[i, j] = (X[i, j] - wmean) / wstd
+
+    return Z
+
+
+@njit(cache=True)
+def mrmr_loop_incremental_weighted(
+    Z: np.ndarray,
+    relevance: np.ndarray,
+    k: int,
+    use_quotient: bool,
+    w: np.ndarray,
+) -> np.ndarray:
+    """
+    Weighted mRMR greedy selection with O(p) memory.
+
+    Parameters
+    ----------
+    Z : ndarray of shape (n, p)
+        Weighted-standardized feature matrix.
+    relevance : ndarray of shape (p,)
+        Relevance scores.
+    k : int
+        Number of features to select.
+    use_quotient : bool
+        If True, use quotient formula; else difference.
+    w : ndarray of shape (n,)
+        Sample weights.
+
+    Returns
+    -------
+    ndarray of shape (k,)
+        Indices of selected features.
+    """
+    n, p = Z.shape
+    k = min(k, p)
+
+    selected = np.empty(k, dtype=np.int64)
+    is_selected = np.zeros(p, dtype=np.bool_)
+    red_sum = np.zeros(p, dtype=np.float64)
+
+    # Select first feature by relevance
+    best = 0
+    best_val = relevance[0]
+    for j in range(1, p):
+        if relevance[j] > best_val:
+            best_val = relevance[j]
+            best = j
+
+    selected[0] = best
+    is_selected[best] = True
+
+    for t in range(1, k):
+        last = selected[t - 1]
+
+        new_red = _corr_with_last_weighted(Z, last, p, w)
+        for j in range(p):
+            if not is_selected[j]:
+                red_sum[j] += new_red[j]
+
+        best_idx = -1
+        best_score = -1e300
+
+        for j in range(p):
+            if is_selected[j]:
+                continue
+
+            mean_red = red_sum[j] / t
+
+            if use_quotient:
+                score = relevance[j] / max(mean_red, FLOOR)
+            else:
+                score = relevance[j] - mean_red
+
+            if score > best_score:
+                best_score = score
+                best_idx = j
+
+        if best_idx < 0:
+            return selected[:t]
+
+        selected[t] = best_idx
+        is_selected[best_idx] = True
+
+    return selected
+
+
+@njit(cache=True)
 def mrmr_loop_incremental(
     Z: np.ndarray,
     relevance: np.ndarray,
@@ -122,8 +296,31 @@ def mrmr_select(
     k: int,
     formula: str = "quotient",
     top_m: Optional[int] = None,
+    sample_weight: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """mRMR feature selection with incremental redundancy."""
+    """
+    mRMR feature selection with incremental redundancy.
+
+    Parameters
+    ----------
+    X : ndarray of shape (n, p)
+        Feature matrix.
+    relevance : ndarray of shape (p,)
+        Relevance scores.
+    k : int
+        Number of features to select.
+    formula : str
+        "quotient" or "difference".
+    top_m : int, optional
+        Pre-filter to top_m features.
+    sample_weight : ndarray, optional
+        Sample weights of shape (n,).
+
+    Returns
+    -------
+    ndarray
+        Indices of selected features.
+    """
     n, p = X.shape
 
     valid_mask = relevance > 0
@@ -144,10 +341,15 @@ def mrmr_select(
         rel_sub = rel_valid
         idx_map = valid_idx
 
-    Z = _standardize_columns(X_sub.astype(np.float64))
     use_quot = formula == "quotient"
 
-    sel_local = mrmr_loop_incremental(Z, rel_sub, k, use_quot)
+    if sample_weight is not None:
+        w = sample_weight.astype(np.float64)
+        Z = _standardize_columns_weighted(X_sub.astype(np.float64), w)
+        sel_local = mrmr_loop_incremental_weighted(Z, rel_sub, k, use_quot, w)
+    else:
+        Z = _standardize_columns(X_sub.astype(np.float64))
+        sel_local = mrmr_loop_incremental(Z, rel_sub, k, use_quot)
 
     return idx_map[sel_local]
 
