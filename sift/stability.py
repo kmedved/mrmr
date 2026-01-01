@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Tuple, Union
+from typing import Iterator, Optional, List, Tuple, Union
 import warnings
 
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -12,6 +12,244 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from joblib import Parallel, delayed
 
 from sift.sampling.smart import SmartSamplerConfig, smart_sample
+
+
+# =============================================================================
+# Block Bootstrap
+# =============================================================================
+
+def _moving_block_sample(sorted_idx: np.ndarray, block_size: int, n: int, rng) -> list:
+    """Sample moving blocks from sorted indices."""
+    n_blocks = max(1, int(np.ceil(n / block_size)))
+    result = []
+    for _ in range(n_blocks):
+        start = rng.integers(0, max(1, n - block_size + 1))
+        result.extend(sorted_idx[start:start + block_size].tolist())
+    return result
+
+
+def _circular_block_sample(sorted_idx: np.ndarray, block_size: int, n: int, rng) -> list:
+    """Sample circular blocks from sorted indices."""
+    n_blocks = max(1, int(np.ceil(n / block_size)))
+    result = []
+    for _ in range(n_blocks):
+        start = rng.integers(0, n)
+        indices = [(start + i) % n for i in range(block_size)]
+        result.extend(sorted_idx[indices].tolist())
+    return result
+
+
+def _stationary_block_sample(sorted_idx: np.ndarray, mean_block_size: int, n: int, rng) -> list:
+    """Sample stationary blocks with geometric block length."""
+    result = []
+    p = 1.0 / max(1, mean_block_size)
+    while len(result) < n:
+        start = rng.integers(0, n)
+        length = min(rng.geometric(p), n - start)
+        result.extend(sorted_idx[start:start + length].tolist())
+    return result[:n]
+
+
+def _block_bootstrap_indices(
+    n: int,
+    n_bootstrap: int,
+    groups: np.ndarray,
+    time: np.ndarray,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "moving",
+    y: Optional[np.ndarray] = None,
+    task: str = "regression",
+    random_state: Optional[int] = None,
+    min_oob: int = 10,
+) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Block bootstrap respecting group/time structure.
+
+    Parameters
+    ----------
+    n : int
+        Total number of samples.
+    n_bootstrap : int
+        Number of bootstrap samples to generate.
+    groups : array
+        Group labels (e.g., player_id).
+    time : array
+        Time values for ordering within groups.
+    block_size : int or "auto"
+        "auto" uses sqrt(n_per_group).
+    block_method : str
+        "moving", "circular", or "stationary"
+    y : array, optional
+        Target variable for classification.
+    task : str
+        "regression" or "classification".
+    random_state : int, optional
+        Random seed.
+    min_oob : int
+        Minimum required out-of-bag samples.
+
+    Yields
+    ------
+    train_idx : ndarray
+        Indices for training.
+    val_idx : ndarray
+        Indices for out-of-bag validation.
+    """
+    rng = np.random.default_rng(random_state)
+
+    unique_groups = np.unique(groups)
+    group_data = {}
+    for g in unique_groups:
+        mask = groups == g
+        idx = np.where(mask)[0]
+        order = np.argsort(time[idx])
+        group_data[g] = idx[order]
+
+    classes = set(np.unique(y)) if task == "classification" and y is not None else None
+
+    valid = 0
+    attempts = 0
+    max_attempts = n_bootstrap * 10
+
+    while valid < n_bootstrap and attempts < max_attempts:
+        attempts += 1
+        train_idx = []
+        val_idx = []
+
+        for g, sorted_idx in group_data.items():
+            n_g = len(sorted_idx)
+            if n_g == 0:
+                continue
+
+            bs = int(np.sqrt(n_g)) if block_size == "auto" else min(block_size, n_g)
+            bs = max(1, bs)
+
+            if block_method == "moving":
+                in_bag = _moving_block_sample(sorted_idx, bs, n_g, rng)
+            elif block_method == "circular":
+                in_bag = _circular_block_sample(sorted_idx, bs, n_g, rng)
+            elif block_method == "stationary":
+                in_bag = _stationary_block_sample(sorted_idx, bs, n_g, rng)
+            else:
+                raise ValueError(f"Unknown block_method: {block_method}")
+
+            in_bag_set = set(in_bag)
+            oob = [i for i in sorted_idx if i not in in_bag_set]
+
+            train_idx.extend(in_bag)
+            val_idx.extend(oob)
+
+        train_arr = np.array(train_idx, dtype=np.int64)
+        val_arr = np.array(val_idx, dtype=np.int64)
+
+        if len(val_arr) < min_oob:
+            continue
+
+        if classes is not None:
+            if set(y[train_arr]) != classes or len(set(y[val_arr])) < 2:
+                continue
+
+        valid += 1
+        yield train_arr, val_arr
+
+    if valid < n_bootstrap:
+        warnings.warn(f"Only generated {valid}/{n_bootstrap} valid block bootstrap splits.")
+
+
+def _bootstrap_indices(
+    n: int,
+    n_bootstrap: int,
+    groups: Optional[np.ndarray] = None,
+    y: Optional[np.ndarray] = None,
+    task: str = "regression",
+    random_state: Optional[int] = None,
+    sample_frac: float = 0.5,
+) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Standard i.i.d. bootstrap indices.
+
+    Parameters
+    ----------
+    n : int
+        Total number of samples.
+    n_bootstrap : int
+        Number of bootstrap samples.
+    groups : array, optional
+        Not used in i.i.d. bootstrap.
+    y : array, optional
+        Target for stratified sampling in classification.
+    task : str
+        "regression" or "classification".
+    random_state : int, optional
+        Random seed.
+    sample_frac : float
+        Fraction of samples to select.
+
+    Yields
+    ------
+    train_idx : ndarray
+    val_idx : ndarray
+    """
+    rng = np.random.default_rng(random_state)
+    subsample_size = max(2, int(n * sample_frac))
+    subsample_size = min(subsample_size, n)
+
+    if task == "classification" and y is not None:
+        classes = np.unique(y)
+        n_classes = len(classes)
+        class_indices = {c: np.where(y == c)[0] for c in classes}
+        class_counts = np.array([len(class_indices[c]) for c in classes])
+
+        if subsample_size < n_classes:
+            subsample_size = n_classes
+
+        for _ in range(n_bootstrap):
+            # Proportional allocation
+            props = class_counts / class_counts.sum()
+            raw = props * subsample_size
+            counts = np.floor(raw).astype(int)
+            counts = np.maximum(counts, 1)
+            counts = np.minimum(counts, class_counts)
+
+            total = counts.sum()
+            frac = raw - np.floor(raw)
+
+            if total < subsample_size:
+                need = subsample_size - total
+                room = class_counts - counts
+                order = np.argsort(-frac)
+                for j in order:
+                    if need == 0:
+                        break
+                    if room[j] > 0:
+                        add = min(room[j], need)
+                        counts[j] += add
+                        need -= add
+            elif total > subsample_size:
+                extra = total - subsample_size
+                order = np.argsort(-counts)
+                for j in order:
+                    if extra == 0:
+                        break
+                    can_drop = counts[j] - 1
+                    if can_drop > 0:
+                        drop = min(can_drop, extra)
+                        counts[j] -= drop
+                        extra -= drop
+
+            idx_list = [
+                rng.choice(class_indices[c], size=counts[i], replace=False)
+                for i, c in enumerate(classes)
+                if counts[i] > 0
+            ]
+            train_idx = np.concatenate(idx_list)
+            val_idx = np.setdiff1d(np.arange(n), train_idx)
+            yield train_idx, val_idx
+    else:
+        for _ in range(n_bootstrap):
+            train_idx = rng.choice(n, size=subsample_size, replace=False)
+            val_idx = np.setdiff1d(np.arange(n), train_idx)
+            yield train_idx, val_idx
 
 
 # =============================================================================
@@ -91,6 +329,10 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         l1_ratio: float = 1.0,
         task: str = 'regression',
         max_features: Optional[int] = None,
+        # Block bootstrap params (only used if groups/time provided)
+        block_size: Union[int, str] = "auto",
+        block_method: str = "moving",
+        # Other
         use_smart_sampler: bool = False,
         sampler_config: Optional[SmartSamplerConfig] = None,
         store_coefs: bool = True,
@@ -107,6 +349,8 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         self.l1_ratio = l1_ratio
         self.task = task
         self.max_features = max_features
+        self.block_size = block_size
+        self.block_method = block_method
         self.use_smart_sampler = use_smart_sampler
         self.sampler_config = sampler_config
         self.store_coefs = store_coefs
@@ -121,6 +365,8 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         X: Union[np.ndarray, pd.DataFrame],
         y: Union[np.ndarray, pd.Series],
         sample_weight: Optional[np.ndarray] = None,
+        groups: Optional[np.ndarray] = None,
+        time: Optional[np.ndarray] = None,
         feature_names: Optional[List[str]] = None
     ) -> 'StabilitySelector':
         """
@@ -133,7 +379,11 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         y : array-like of shape (n_samples,)
             Target values.
         sample_weight : array-like of shape (n_samples,), optional
-            Sample weights.
+            Sample weights. Defaults to uniform.
+        groups : array, optional
+            Group labels. If provided with time, uses block bootstrap.
+        time : array, optional
+            Time values. If provided with groups, uses block bootstrap.
         feature_names : list of str, optional
             Feature names.
 
@@ -172,88 +422,49 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         else:
             self.alpha_ = self.alpha
 
+        # Choose bootstrap method
+        use_block = groups is not None and time is not None
+
         if self.verbose:
             task_str = 'classification' if self.task == 'classification' else 'regression'
-            print(f"Stability selection ({task_str}): {self.n_bootstrap} bootstraps, "
+            bootstrap_type = f"block ({self.block_method}, size={self.block_size})" if use_block else "i.i.d."
+            print(f"Stability selection ({task_str}): {self.n_bootstrap} bootstraps ({bootstrap_type}), "
                   f"α={self.alpha_:.4f}, threshold={self.threshold}")
 
-        # Bootstrap
-        rng = np.random.default_rng(self.random_state)
-        seeds = rng.integers(0, 2**31, size=self.n_bootstrap)
-        subsample_size = max(2, int(n * self.sample_frac))  # At least 2 samples
-        subsample_size = min(subsample_size, n)  # Can't exceed n
+        # Generate bootstrap splits
+        if use_block:
+            groups_arr = np.asarray(groups)
+            time_arr = np.asarray(time)
+            splits = list(_block_bootstrap_indices(
+                n=n,
+                n_bootstrap=self.n_bootstrap,
+                groups=groups_arr,
+                time=time_arr,
+                block_size=self.block_size,
+                block_method=self.block_method,
+                y=y if self.task == "classification" else None,
+                task=self.task,
+                random_state=self.random_state,
+            ))
+        else:
+            splits = list(_bootstrap_indices(
+                n=n,
+                n_bootstrap=self.n_bootstrap,
+                groups=None,
+                y=y if self.task == "classification" else None,
+                task=self.task,
+                random_state=self.random_state,
+                sample_frac=self.sample_frac,
+            ))
 
         alpha = self.alpha_
         l1_ratio = self.l1_ratio
         task = self.task
         coef_threshold = self.coef_threshold
 
-        # For classification, we need stratified sampling to avoid single-class subsamples
-        is_classification = task == 'classification'
-        if is_classification:
-            classes = np.unique(y)
-            n_classes = len(classes)
-            # Pre-compute indices per class for stratified sampling
-            class_indices = {c: np.where(y == c)[0] for c in classes}
-            class_counts = np.array([len(class_indices[c]) for c in classes])
-
-            # Ensure subsample_size >= n_classes
-            if subsample_size < n_classes:
-                subsample_size = n_classes
-
-        def _stratified_indices(rng_local, subsample_size):
-            """Get stratified sample indices that sum to exactly subsample_size."""
-            # Proportional allocation
-            props = class_counts / class_counts.sum()
-            raw = props * subsample_size
-            counts = np.floor(raw).astype(int)
-
-            # Ensure at least 1 per class
-            counts = np.maximum(counts, 1)
-            # Cap by availability
-            counts = np.minimum(counts, class_counts)
-
-            # Adjust to hit exact subsample_size
-            total = counts.sum()
-            frac = raw - np.floor(raw)
-
-            if total < subsample_size:
-                need = subsample_size - total
-                room = class_counts - counts
-                order = np.argsort(-frac)  # Prioritize largest fractional parts
-                for j in order:
-                    if need == 0:
-                        break
-                    if room[j] > 0:
-                        add = min(room[j], need)
-                        counts[j] += add
-                        need -= add
-            elif total > subsample_size:
-                extra = total - subsample_size
-                order = np.argsort(-counts)  # Remove from largest first
-                for j in order:
-                    if extra == 0:
-                        break
-                    can_drop = counts[j] - 1  # Keep at least 1
-                    if can_drop > 0:
-                        drop = min(can_drop, extra)
-                        counts[j] -= drop
-                        extra -= drop
-
-            idx_list = [
-                rng_local.choice(class_indices[c], size=counts[i], replace=False)
-                for i, c in enumerate(classes)
-                if counts[i] > 0
-            ]
-            return np.concatenate(idx_list)
-
-        def single_run(seed):
-            rng_local = np.random.default_rng(seed)
-
-            if is_classification:
-                idx = _stratified_indices(rng_local, subsample_size)
-            else:
-                idx = rng_local.choice(n, size=subsample_size, replace=False)
+        def single_run(split_idx):
+            train_idx, _ = splits[split_idx]
+            idx = train_idx
 
             if task == 'classification':
                 # C = 1/alpha for LogisticRegression
@@ -262,7 +473,7 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
                     solver='saga',
                     C=1.0 / alpha,
                     max_iter=3000,
-                    random_state=seed,  # Reproducibility
+                    random_state=split_idx,  # Reproducibility
                     n_jobs=1  # Avoid nested parallelism
                 )
             elif l1_ratio >= 1.0:
@@ -297,21 +508,22 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
 
         # Chunked execution to reduce peak memory
         # (avoids holding all n_bootstrap results in memory at once)
-        chunk_size = min(20, self.n_bootstrap)  # Process 20 at a time
+        n_splits = len(splits)
+        chunk_size = min(20, n_splits)  # Process 20 at a time
 
         sel_count = np.zeros(p, dtype=np.int32)
         sum_abs_coef = np.zeros(p, dtype=np.float64)
 
         if self.store_coefs:
-            self.coef_bootstrap_ = np.empty((self.n_bootstrap, p), dtype=np.float32)
+            self.coef_bootstrap_ = np.empty((n_splits, p), dtype=np.float32)
 
         bootstrap_idx = 0
-        for chunk_start in range(0, self.n_bootstrap, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, self.n_bootstrap)
-            chunk_seeds = seeds[chunk_start:chunk_end]
+        for chunk_start in range(0, n_splits, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, n_splits)
+            chunk_indices = list(range(chunk_start, chunk_end))
 
             chunk_results = Parallel(n_jobs=self.n_jobs, prefer=self.parallel_backend)(
-                delayed(single_run)(seed) for seed in chunk_seeds
+                delayed(single_run)(i) for i in chunk_indices
             )
 
             # Aggregate this chunk immediately, then discard
@@ -325,8 +537,8 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
 
             # chunk_results goes out of scope here, memory freed
 
-        self.selection_frequencies_ = (sel_count / self.n_bootstrap).astype(np.float32)
-        self.mean_abs_coef_ = (sum_abs_coef / self.n_bootstrap).astype(np.float32)
+        self.selection_frequencies_ = (sel_count / max(n_splits, 1)).astype(np.float32)
+        self.mean_abs_coef_ = (sum_abs_coef / max(n_splits, 1)).astype(np.float32)
 
         # Select features
         mask = self.selection_frequencies_ >= self.threshold
@@ -895,11 +1107,17 @@ def stability_regression(
     X: Union[np.ndarray, pd.DataFrame],
     y: Union[np.ndarray, pd.Series],
     k: int,
+    sample_weight: Optional[np.ndarray] = None,
+    groups: Optional[np.ndarray] = None,
+    time: Optional[np.ndarray] = None,
+    *,
     threshold: float = 0.6,
     n_bootstrap: int = 50,
+    sample_frac: float = 0.5,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "moving",
     alpha: Optional[float] = None,
     l1_ratio: float = 1.0,
-    sample_frac: float = 0.5,
     use_smart_sampler: bool = False,
     sampler_config: Optional[SmartSamplerConfig] = None,
     random_state: Optional[int] = None,
@@ -921,16 +1139,26 @@ def stability_regression(
         Continuous target variable.
     k : int
         Maximum number of features to select.
+    sample_weight : array, optional
+        Sample weights. Defaults to uniform.
+    groups : array, optional
+        Group labels. If provided with time, uses block bootstrap.
+    time : array, optional
+        Time values. If provided with groups, uses block bootstrap.
     threshold : float, default=0.6
         Minimum selection frequency to keep a feature.
     n_bootstrap : int, default=50
         Number of bootstrap iterations.
+    sample_frac : float, default=0.5
+        Fraction of data per bootstrap sample (i.i.d. bootstrap only).
+    block_size : int or "auto", default="auto"
+        Block size for block bootstrap. "auto" uses sqrt(n_per_group).
+    block_method : str, default="moving"
+        Block bootstrap method: "moving", "circular", or "stationary".
     alpha : float, optional
         Regularization strength. If None, estimated via CV.
     l1_ratio : float, default=1.0
         ElasticNet mixing (1.0 = Lasso, <1.0 = ElasticNet).
-    sample_frac : float, default=0.5
-        Fraction of data per bootstrap sample.
     use_smart_sampler : bool, default=False
         Whether to apply leverage-based smart sampling.
     sampler_config : SmartSamplerConfig, optional
@@ -958,13 +1186,15 @@ def stability_regression(
         l1_ratio=l1_ratio,
         sample_frac=sample_frac,
         max_features=k,
+        block_size=block_size,
+        block_method=block_method,
         use_smart_sampler=use_smart_sampler,
         sampler_config=sampler_config,
         random_state=random_state,
         n_jobs=n_jobs,
         verbose=verbose,
     )
-    selector.fit(X, y)
+    selector.fit(X, y, sample_weight=sample_weight, groups=groups, time=time)
     if return_indices is None:
         return_indices = not isinstance(X, pd.DataFrame)
     if return_indices:
@@ -976,10 +1206,16 @@ def stability_classif(
     X: Union[np.ndarray, pd.DataFrame],
     y: Union[np.ndarray, pd.Series],
     k: int,
+    sample_weight: Optional[np.ndarray] = None,
+    groups: Optional[np.ndarray] = None,
+    time: Optional[np.ndarray] = None,
+    *,
     threshold: float = 0.6,
     n_bootstrap: int = 50,
-    alpha: Optional[float] = None,
     sample_frac: float = 0.5,
+    block_size: Union[int, str] = "auto",
+    block_method: str = "moving",
+    alpha: Optional[float] = None,
     use_smart_sampler: bool = False,
     sampler_config: Optional[SmartSamplerConfig] = None,
     random_state: Optional[int] = None,
@@ -1001,14 +1237,24 @@ def stability_classif(
         Categorical target variable.
     k : int
         Maximum number of features to select.
+    sample_weight : array, optional
+        Sample weights. Defaults to uniform.
+    groups : array, optional
+        Group labels. If provided with time, uses block bootstrap.
+    time : array, optional
+        Time values. If provided with groups, uses block bootstrap.
     threshold : float, default=0.6
         Minimum selection frequency to keep a feature.
     n_bootstrap : int, default=50
         Number of bootstrap iterations.
+    sample_frac : float, default=0.5
+        Fraction of data per bootstrap sample (i.i.d. bootstrap only).
+    block_size : int or "auto", default="auto"
+        Block size for block bootstrap. "auto" uses sqrt(n_per_group).
+    block_method : str, default="moving"
+        Block bootstrap method: "moving", "circular", or "stationary".
     alpha : float, optional
         Regularization strength. If None, estimated via CV.
-    sample_frac : float, default=0.5
-        Fraction of data per bootstrap sample.
     use_smart_sampler : bool, default=False
         Whether to apply leverage-based smart sampling.
     sampler_config : SmartSamplerConfig, optional
@@ -1035,13 +1281,15 @@ def stability_classif(
         alpha=alpha,
         sample_frac=sample_frac,
         max_features=k,
+        block_size=block_size,
+        block_method=block_method,
         use_smart_sampler=use_smart_sampler,
         sampler_config=sampler_config,
         random_state=random_state,
         n_jobs=n_jobs,
         verbose=verbose,
     )
-    selector.fit(X, y)
+    selector.fit(X, y, sample_weight=sample_weight, groups=groups, time=time)
     if return_indices is None:
         return_indices = not isinstance(X, pd.DataFrame)
     if return_indices:

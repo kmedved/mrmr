@@ -15,6 +15,9 @@ from sift.estimators.copula import (
     gaussian_mi_from_corr,
     greedy_corr_prune,
     rank_gauss_1d,
+    weighted_corr_with_vector,
+    weighted_correlation_matrix,
+    weighted_rank_gauss_1d,
 )
 
 
@@ -293,9 +296,11 @@ def select_cached(
 
     y_arr = to_numpy(y, dtype=np.float32).ravel()
     ys = y_arr[cache.row_idx]
-    zy = rank_gauss_1d(ys)
+    w = cache.sample_weight
 
-    r = corr_with_vector(cache.Z, zy)
+    # Use weighted transforms
+    zy = weighted_rank_gauss_1d(ys, w)
+    r = weighted_corr_with_vector(cache.Z, zy, w)
     rel = gaussian_mi_from_corr(r)
 
     p_valid = len(r)
@@ -310,7 +315,7 @@ def select_cached(
         cand = np.arange(p_valid)
 
     Z_cand = np.ascontiguousarray(cache.Z[:, cand], dtype=np.float64)
-    R_cand = correlation_matrix_fast(Z_cand)
+    R_cand = weighted_correlation_matrix(Z_cand, w)
 
     keep = greedy_corr_prune(np.arange(len(cand)), R_cand, np.abs(r[cand]), corr_prune)
     cand = cand[keep]
