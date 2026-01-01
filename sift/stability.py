@@ -55,11 +55,11 @@ def _block_bootstrap_indices(
     n_bootstrap: int,
     groups: np.ndarray,
     time: np.ndarray,
-    block_size: int | str = "auto",
+    block_size: Union[int, str] = "auto",
     block_method: str = "moving",
-    y: np.ndarray | None = None,
+    y: Optional[np.ndarray] = None,
     task: str = "regression",
-    random_state: int | None = None,
+    random_state: Optional[int] = None,
     min_oob: int = 10,
 ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
     """
@@ -159,10 +159,10 @@ def _block_bootstrap_indices(
 def _bootstrap_indices(
     n: int,
     n_bootstrap: int,
-    groups: np.ndarray | None = None,
-    y: np.ndarray | None = None,
+    groups: Optional[np.ndarray] = None,
+    y: Optional[np.ndarray] = None,
     task: str = "regression",
-    random_state: int | None = None,
+    random_state: Optional[int] = None,
     sample_frac: float = 0.5,
 ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
     """
@@ -330,7 +330,7 @@ class StabilitySelector(BaseEstimator, TransformerMixin):
         task: str = 'regression',
         max_features: Optional[int] = None,
         # Block bootstrap params (only used if groups/time provided)
-        block_size: int | str = "auto",
+        block_size: Union[int, str] = "auto",
         block_method: str = "moving",
         # Other
         use_smart_sampler: bool = False,
@@ -1114,7 +1114,7 @@ def stability_regression(
     threshold: float = 0.6,
     n_bootstrap: int = 50,
     sample_frac: float = 0.5,
-    block_size: int | str = "auto",
+    block_size: Union[int, str] = "auto",
     block_method: str = "moving",
     alpha: Optional[float] = None,
     l1_ratio: float = 1.0,
@@ -1213,7 +1213,7 @@ def stability_classif(
     threshold: float = 0.6,
     n_bootstrap: int = 50,
     sample_frac: float = 0.5,
-    block_size: int | str = "auto",
+    block_size: Union[int, str] = "auto",
     block_method: str = "moving",
     alpha: Optional[float] = None,
     use_smart_sampler: bool = False,

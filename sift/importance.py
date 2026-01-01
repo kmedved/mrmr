@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Dict, Optional, Union
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -12,16 +12,16 @@ def permutation_importance(
     model,
     X: pd.DataFrame,
     y: np.ndarray,
-    sample_weight: np.ndarray | None = None,
-    groups: np.ndarray | None = None,
-    time: np.ndarray | None = None,
+    sample_weight: Optional[np.ndarray] = None,
+    groups: Optional[np.ndarray] = None,
+    time: Optional[np.ndarray] = None,
     *,
-    scoring: str | Callable = "neg_mse",
+    scoring: Union[str, Callable] = "neg_mse",
     n_repeats: int = 10,
     permute_method: str = "auto",
-    block_size: int | str = "auto",
+    block_size: Union[int, str] = "auto",
     n_jobs: int = -1,
-    random_state: int | None = None,
+    random_state: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Permutation importance with optional time-series-aware strategies.
@@ -117,9 +117,9 @@ def permutation_importance(
 
 
 def _build_group_info(
-    groups: np.ndarray | None,
-    time: np.ndarray | None,
-) -> dict | None:
+    groups: Optional[np.ndarray],
+    time: Optional[np.ndarray],
+) -> Optional[Dict]:
     """Precompute time-sorted indices per group."""
     if groups is None:
         return None
@@ -137,9 +137,9 @@ def _build_group_info(
 
 def _permute(
     x: np.ndarray,
-    group_info: dict | None,
+    group_info: Optional[Dict],
     method: str,
-    block_size: int | str,
+    block_size: Union[int, str],
     seed: int,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -163,7 +163,7 @@ def _permute_within_group(x: np.ndarray, group_info: dict, rng) -> np.ndarray:
     return result
 
 
-def _permute_block(x: np.ndarray, group_info: dict, block_size: int | str, rng) -> np.ndarray:
+def _permute_block(x: np.ndarray, group_info: Dict, block_size: Union[int, str], rng) -> np.ndarray:
     result = x.copy()
     for sorted_idx in group_info.values():
         n = len(sorted_idx)
@@ -195,7 +195,7 @@ def _score(
     X: np.ndarray,
     y: np.ndarray,
     w: np.ndarray,
-    scoring: str | Callable,
+    scoring: Union[str, Callable],
 ) -> float:
     y_pred = model.predict(X)
 
