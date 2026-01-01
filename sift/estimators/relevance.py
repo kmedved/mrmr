@@ -6,6 +6,114 @@ import numpy as np
 from numba import njit, prange
 
 
+def _ensure_weights(w: np.ndarray | None, n: int) -> np.ndarray:
+    """Ensure sample weights are a valid numpy array."""
+    if w is None:
+        return np.ones(n, dtype=np.float64)
+    return np.asarray(w, dtype=np.float64)
+
+
+@njit(cache=True, parallel=True)
+def f_regression_weighted(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """
+    Weighted F-statistic for regression.
+
+    For unweighted, caller passes np.ones(n).
+    """
+    n, p = X.shape
+    w_sum = 0.0
+    for i in range(n):
+        w_sum += w[i]
+
+    # Weighted mean of y
+    y_mean = 0.0
+    for i in range(n):
+        y_mean += w[i] * y[i]
+    y_mean /= w_sum
+
+    # Weighted SS of y
+    y_ss = 0.0
+    for i in range(n):
+        y_ss += w[i] * (y[i] - y_mean) ** 2
+
+    scores = np.empty(p, dtype=np.float64)
+    for j in prange(p):
+        x_mean = 0.0
+        for i in range(n):
+            x_mean += w[i] * X[i, j]
+        x_mean /= w_sum
+
+        x_ss = 0.0
+        xy_cov = 0.0
+        for i in range(n):
+            xc = X[i, j] - x_mean
+            yc = y[i] - y_mean
+            x_ss += w[i] * xc * xc
+            xy_cov += w[i] * xc * yc
+
+        if x_ss < 1e-12 or y_ss < 1e-12:
+            scores[j] = 0.0
+        else:
+            r = xy_cov / np.sqrt(x_ss * y_ss)
+            r2 = min(r * r, 0.99999)
+            scores[j] = r2 / (1.0 - r2) * (w_sum - 2)
+
+    return scores
+
+
+@njit(cache=True, parallel=True)
+def f_classif_weighted(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Weighted F-statistic for classification (weighted ANOVA)."""
+    n, p = X.shape
+    n_classes = int(y.max()) + 1
+
+    class_weights = np.zeros(n_classes, dtype=np.float64)
+    for i in range(n):
+        class_weights[int(y[i])] += w[i]
+
+    w_sum = 0.0
+    for i in range(n):
+        w_sum += w[i]
+
+    scores = np.empty(p, dtype=np.float64)
+
+    for j in prange(p):
+        x_mean = 0.0
+        for i in range(n):
+            x_mean += w[i] * X[i, j]
+        x_mean /= w_sum
+
+        class_sums = np.zeros(n_classes, dtype=np.float64)
+        class_sq_sums = np.zeros(n_classes, dtype=np.float64)
+
+        for i in range(n):
+            val = X[i, j]
+            c = int(y[i])
+            class_sums[c] += w[i] * val
+            class_sq_sums[c] += w[i] * val * val
+
+        ss_between = 0.0
+        ss_within = 0.0
+
+        for c in range(n_classes):
+            w_c = class_weights[c]
+            if w_c < 1e-12:
+                continue
+            mean_c = class_sums[c] / w_c
+            ss_between += w_c * (mean_c - x_mean) ** 2
+            ss_within += class_sq_sums[c] - w_c * mean_c * mean_c
+
+        df_between = n_classes - 1
+        df_within = w_sum - n_classes
+
+        if df_within <= 0 or df_between <= 0 or ss_within < 1e-12:
+            scores[j] = 0.0
+        else:
+            scores[j] = (ss_between / df_between) / (ss_within / df_within)
+
+    return scores
+
+
 @njit(cache=True, parallel=True)
 def f_regression(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     """
