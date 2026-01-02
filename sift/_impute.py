@@ -21,6 +21,9 @@ def mean_impute(X: np.ndarray, *, copy: bool = True) -> np.ndarray:
         Feature matrix with non-finite values replaced by column means.
         Columns that are entirely non-finite are filled with 0.
     """
+    X = np.asarray(X)
+    if X.ndim != 2:
+        raise ValueError("mean_impute expects 2D array")
     if copy:
         X = X.copy()
 

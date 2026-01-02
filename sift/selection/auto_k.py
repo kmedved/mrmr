@@ -153,7 +153,7 @@ def select_k_auto(
                 pred = model.predict(Xva_s[:, :k])
 
                 if task == "classification" and metric == "logloss":
-                    if len(np.unique(yva)) < 2:
+                    if len(np.unique(yva)) < 2 or set(np.unique(ytr)) != set(labels):
                         split_scores[k] = np.inf
                     else:
                         proba = model.predict_proba(Xva_s[:, :k])

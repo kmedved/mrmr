@@ -282,7 +282,7 @@ class TestClassificationAutoK:
         n, p = 100, 20
         X = pd.DataFrame(np.random.randn(n, p), columns=[f"x{i}" for i in range(p)])
 
-        y = np.array([0] * 80 + [1] * 20)
+        y = np.array([0] * 70 + [1] * 30)
         time = np.arange(n)
 
         config = AutoKConfig(strategy="time_holdout", max_k=15, metric="logloss", val_frac=0.3)

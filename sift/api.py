@@ -48,12 +48,17 @@ def _validate_groups_time(
     groups: Optional[np.ndarray],
     time: Optional[np.ndarray],
     n_rows: int,
-) -> None:
-    """Validate groups/time array lengths."""
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Validate and coerce groups/time arrays."""
     if groups is not None and len(groups) != n_rows:
         raise ValueError(f"groups has {len(groups)} elements but X has {n_rows} rows")
     if time is not None and len(time) != n_rows:
         raise ValueError(f"time has {len(time)} elements but X has {n_rows} rows")
+    if groups is not None:
+        groups = np.asarray(groups)
+    if time is not None:
+        time = np.asarray(time)
+    return groups, time
 
 
 def _prepare_eval_data(
@@ -274,7 +279,7 @@ def select_mrmr(
         Selected feature names.
     """
     n_rows = X.shape[0] if hasattr(X, "shape") else len(X)
-    _validate_groups_time(groups, time, n_rows)
+    groups, time = _validate_groups_time(groups, time, n_rows)
     if k == "auto":
         auto_k_config = _resolve_auto_k_config(auto_k_config, time, groups)
 
@@ -513,7 +518,7 @@ def select_jmi(
     score(f) = Σ_{s ∈ S} I(f, s; y)
     """
     n_rows = X.shape[0] if hasattr(X, "shape") else len(X)
-    _validate_groups_time(groups, time, n_rows)
+    groups, time = _validate_groups_time(groups, time, n_rows)
     estimator = resolve_jmi_estimator(estimator, task)
 
     check_regression_only(task, estimator)
@@ -679,7 +684,7 @@ def select_jmim(
     score(f) = min_{s ∈ S} I(f, s; y)
     """
     n_rows = X.shape[0] if hasattr(X, "shape") else len(X)
-    _validate_groups_time(groups, time, n_rows)
+    groups, time = _validate_groups_time(groups, time, n_rows)
     estimator = resolve_jmi_estimator(estimator, task)
 
     check_regression_only(task, estimator)
@@ -912,7 +917,7 @@ def select_cefsplus(
     REGRESSION ONLY.
     """
     n_rows = X.shape[0] if hasattr(X, "shape") else len(X)
-    _validate_groups_time(groups, time, n_rows)
+    groups, time = _validate_groups_time(groups, time, n_rows)
     if cat_features and cat_encoding != "none" and not isinstance(X, pd.DataFrame):
         raise TypeError("cat_features/cat_encoding require X to be a pandas DataFrame.")
     if isinstance(X, pd.DataFrame) and cat_features is None:
