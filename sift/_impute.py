@@ -13,7 +13,8 @@ def mean_impute(X: np.ndarray, *, copy: bool = True) -> np.ndarray:
     X : ndarray of shape (n, p)
         Feature matrix, may contain NaN/inf.
     copy : bool
-        If True, operate on a copy. If False, modify in place.
+        If True, operate on a copy. If False, modify in place when possible.
+        Non-floating inputs are always cast to float64, which allocates.
 
     Returns
     -------

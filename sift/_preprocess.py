@@ -140,7 +140,9 @@ def ensure_weights(
         raise ValueError("sample_weight must sum to > 0")
 
     if normalize:
-        w = w / (w.mean() + 1e-12)
+        mean = w.mean()
+        mean = max(mean, np.finfo(np.float64).tiny)
+        w = w / mean
 
     return w
 
@@ -242,6 +244,10 @@ def subsample_xy(
     else:
         row_idx = np.arange(n)
         X_sub, y_sub, w_sub = X, y, w
+
+    mean = w_sub.mean()
+    mean = max(mean, np.finfo(np.float64).tiny)
+    w_sub = w_sub / mean
 
     if return_idx:
         return X_sub, y_sub, w_sub, row_idx

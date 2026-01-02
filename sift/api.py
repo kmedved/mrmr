@@ -50,14 +50,14 @@ def _validate_groups_time(
     n_rows: int,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Validate and coerce groups/time arrays."""
-    if groups is not None and len(groups) != n_rows:
-        raise ValueError(f"groups has {len(groups)} elements but X has {n_rows} rows")
-    if time is not None and len(time) != n_rows:
-        raise ValueError(f"time has {len(time)} elements but X has {n_rows} rows")
     if groups is not None:
-        groups = np.asarray(groups)
+        groups = np.asarray(groups).reshape(-1)
+        if len(groups) != n_rows:
+            raise ValueError(f"groups has {len(groups)} elements but X has {n_rows} rows")
     if time is not None:
-        time = np.asarray(time)
+        time = np.asarray(time).reshape(-1)
+        if len(time) != n_rows:
+            raise ValueError(f"time has {len(time)} elements but X has {n_rows} rows")
     return groups, time
 
 
