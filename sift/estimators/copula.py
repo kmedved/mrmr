@@ -59,7 +59,7 @@ def build_cache(
 
     Xs = X_arr[row_idx]
     ws = w[row_idx]
-    Xs = mean_impute(Xs, copy=(Xs.base is not None))
+    Xs = mean_impute(Xs, copy=False)
 
     stds = np.std(Xs, axis=0)
     valid_mask = stds > min_std

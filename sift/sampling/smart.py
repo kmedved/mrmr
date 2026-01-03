@@ -166,7 +166,7 @@ def smart_sample(
 
     df = df.reset_index(drop=True)
 
-    X = df[feature_cols].to_numpy(dtype=np.float32)
+    X = df[feature_cols].to_numpy(dtype=np.float32, copy=True)
     y = df[y_col].to_numpy(dtype=np.float32)
 
     from sift._impute import mean_impute

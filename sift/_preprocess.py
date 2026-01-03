@@ -241,6 +241,8 @@ def subsample_xy(
         rng = np.random.default_rng(random_state)
         row_idx = rng.choice(n, size=subsample, replace=False)
         X_sub, y_sub, w_sub = X[row_idx], y[row_idx], w[row_idx]
+        if float(w_sub.sum()) <= 0.0:
+            raise ValueError("Subsample has zero total weight; check sample_weight.")
     else:
         row_idx = np.arange(n)
         X_sub, y_sub, w_sub = X, y, w

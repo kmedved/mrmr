@@ -240,7 +240,7 @@ class TestClassificationAutoK:
         from sift.selection.auto_k import AutoKConfig, select_k_auto
 
         X, y, groups, _ = classification_data
-        config = AutoKConfig(strategy="group_cv", max_k=20, metric="accuracy")
+        config = AutoKConfig(strategy="group_cv", max_k=20, metric="error")
         feature_path = [f"x{i}" for i in range(20)]
 
         best_k, selected, diag = select_k_auto(

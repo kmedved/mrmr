@@ -22,7 +22,7 @@ class AutoKConfig:
 
     k_method: Literal["evaluate", "elbow"] = "evaluate"
     strategy: Literal["time_holdout", "group_cv"] = "time_holdout"
-    metric: Literal["rmse", "mae", "logloss", "accuracy", "auto"] = "auto"
+    metric: Literal["rmse", "mae", "logloss", "error", "auto"] = "auto"
     max_k: int = 100
     min_k: int = 5
     val_frac: float = 0.2
@@ -53,7 +53,7 @@ def _resolve_metric(metric: str, task: str) -> str:
     """Resolve metric, defaulting based on task."""
     if metric == "auto":
         return "rmse" if task == "regression" else "logloss"
-    if task == "regression" and metric in ("logloss", "accuracy"):
+    if task == "regression" and metric in ("logloss", "error"):
         raise ValueError(f"metric='{metric}' is invalid for task='regression'")
     if task == "classification" and metric in ("rmse", "mae"):
         raise ValueError(f"metric='{metric}' is invalid for task='classification'")
@@ -72,7 +72,7 @@ def _compute_metric(
         return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     if metric == "mae":
         return float(np.mean(np.abs(y_true - y_pred)))
-    if metric == "accuracy":
+    if metric == "error":
         return float(1.0 - np.mean(y_true == y_pred))
     if metric == "logloss":
         if y_proba is None:
