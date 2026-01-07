@@ -27,7 +27,7 @@ setup(
     description='Feature selection toolbox (mRMR, JMI/JMIM, CEFS+, Stability Selection, ...)',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/smazzanti/mrmr',
+    url='https://github.com/kmedved/sift',
     author='Samuele Mazzanti',
     author_email='mazzanti.sam@gmail.com',
     license='MIT',
