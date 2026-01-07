@@ -1,486 +1,659 @@
-# sift: feature selection toolbox
+# SIFT: Feature Selection Toolbox
 
-`sift` is a feature selection toolbox that brings together minimal-optimal and stability-focused selectors.
-It includes **mRMR**, **JMI/JMIM**, **CEFS+** (and related Gaussian-copula variants), and **Stability Selection**.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Supported selectors
+**SIFT** is a comprehensive feature selection library that brings together minimal-optimal and stability-focused selectors. It provides multiple state-of-the-art feature selection algorithms for both regression and classification tasks, with advanced support for time-series data, grouped/panel data, and weighted samples.
 
-- **mRMR / JMI / JMIM** (classification & regression; pandas, with a polars mRMR path)
-- **CEFS+** (plus `mrmr_fcd` / `mrmr_fcq` variants)
-- **Stability Selection** (regression & classification)
-- **CatBoost-based selection** (SHAP/permutation/forward, optional dependency)
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Algorithms](#algorithms)
+  - [mRMR (Minimum Redundancy Maximum Relevance)](#mrmr-minimum-redundancy-maximum-relevance)
+  - [JMI / JMIM (Joint Mutual Information)](#jmi--jmim-joint-mutual-information)
+  - [CEFS+ (Conditional Entropy Feature Selection)](#cefs-conditional-entropy-feature-selection)
+  - [Stability Selection](#stability-selection)
+  - [Boruta](#boruta)
+  - [CatBoost-based Selection](#catboost-based-selection)
+- [Advanced Features](#advanced-features)
+  - [Automatic K Selection](#automatic-k-selection)
+  - [Time Series Support](#time-series-support)
+  - [Grouped/Panel Data](#groupedpanel-data)
+  - [Smart Sampling](#smart-sampling)
+  - [Categorical Features](#categorical-features)
+  - [Sample Weights](#sample-weights)
+- [Algorithm Selection Guide](#algorithm-selection-guide)
+- [API Reference](#api-reference)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **Multiple Algorithms**: mRMR, JMI/JMIM, CEFS+, Stability Selection, Boruta, and CatBoost-based selection
+- **Both Tasks**: Full support for regression and classification
+- **Time-Series Aware**: Block bootstrap, temporal holdout validation, and time-aware permutation
+- **Group/Panel Data**: Group-aware bootstrap and cross-validation for hierarchical data
+- **Automatic K Selection**: Built-in methods to automatically determine optimal feature count
+- **Sample Weights**: Full support for weighted samples throughout
+- **Categorical Features**: Multiple encoding strategies (leave-one-out, target, James-Stein)
+- **Performance Optimized**: Numba JIT compilation, caching, and parallelization
+- **Scikit-learn Compatible**: `StabilitySelector` and `BorutaSelector` implement sklearn's transformer interface
 
 ## Installation
 
-This project is not published on PyPI. Install it from source:
+SIFT is not published on PyPI. Install from source:
 
 ```bash
 git clone https://github.com/kmedved/sift.git
 cd sift
-python -m pip install -e .
+pip install -e .
 ```
 
-### Extras
+### Optional Dependencies
 
 ```bash
-python -m pip install -e ".[all]"
-python -m pip install -e ".[polars]"
-python -m pip install -e ".[categorical]"
-python -m pip install -e ".[numba]"
-python -m pip install -e ".[catboost]"
-python -m pip install -e ".[test]"
+# All optional dependencies
+pip install -e ".[all]"
+
+# Individual extras
+pip install -e ".[catboost]"     # CatBoost-based selection
+pip install -e ".[categorical]"  # Advanced categorical encoding (category_encoders)
+pip install -e ".[polars]"       # Polars DataFrame support
+pip install -e ".[test]"         # Testing dependencies (pytest)
 ```
 
-## Quick examples
+## Quick Start
 
-### mRMR / JMI / JMIM (pandas)
-
-```python
-import pandas as pd
-from sklearn.datasets import make_classification
-from sift import mrmr_classif
-
-X, y = make_classification(
-    n_samples=1000,
-    n_features=50,
-    n_informative=10,
-    n_redundant=40,
-)
-X = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
-y = pd.Series(y)
-
-# mRMR (default)
-selected_mrmr = mrmr_classif(X=X, y=y, K=10)
-
-# JMI / JMIM
-selected_jmi = mrmr_classif(X=X, y=y, K=10, method="jmi")
-selected_jmim = mrmr_classif(X=X, y=y, K=10, method="jmim")
-```
-
-### CEFS+ (regression)
+### Basic Feature Selection
 
 ```python
 import pandas as pd
 from sklearn.datasets import make_regression
-from sift import cefsplus_regression
+from sift import select_mrmr, select_jmi, select_cefsplus
 
-X, y = make_regression(n_samples=500, n_features=30, n_informative=8, noise=0.1)
-X = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
-y = pd.Series(y)
+# Generate sample data
+X, y = make_regression(n_samples=1000, n_features=50, n_informative=10, noise=0.1)
+X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(50)])
 
-selected_cefs = cefsplus_regression(X, y, K=8)
+# mRMR selection
+selected = select_mrmr(X, y, k=10, task="regression")
+print(f"mRMR selected: {selected}")
+
+# JMI selection
+selected = select_jmi(X, y, k=10, task="regression")
+print(f"JMI selected: {selected}")
+
+# CEFS+ selection (regression only)
+selected = select_cefsplus(X, y, k=10)
+print(f"CEFS+ selected: {selected}")
+```
+
+### Classification Example
+
+```python
+from sklearn.datasets import make_classification
+from sift import select_mrmr, select_jmi
+
+X, y = make_classification(n_samples=1000, n_features=50, n_informative=10, n_redundant=20)
+X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(50)])
+
+# mRMR for classification
+selected = select_mrmr(X, y, k=10, task="classification")
+
+# JMI with different relevance measure
+selected = select_jmi(X, y, k=10, task="classification", relevance="ks")
 ```
 
 ### Stability Selection
 
 ```python
-import pandas as pd
-from sklearn.datasets import make_regression
-from sift import stability_regression
+from sift import stability_regression, StabilitySelector
 
-X, y = make_regression(n_samples=300, n_features=25, n_informative=6, noise=0.2)
-X = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
-
-selected_stable = stability_regression(
-    X,
-    y,
-    K=10,
-    n_bootstrap=30,
-    threshold=0.3,
-    random_state=42,
-    verbose=False,
+# Function API
+selected = stability_regression(
+    X, y, k=15,
+    n_bootstrap=50,
+    threshold=0.6,
+    random_state=42
 )
-```
 
-### CatBoost feature selection (optional)
-
-```python
-import pandas as pd
-from sklearn.datasets import make_regression
-import sift
-
-X, y = make_regression(n_samples=300, n_features=25, n_informative=6, noise=0.2)
-X = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
-selected = sift.catboost_regression(X, y, K=10, algorithm="forward", prefilter_k=200)
-```
-
-#### Usage Examples
-
-**Time Series Data (Your NBA Use Case)**
-
-```python
-from sklearn.model_selection import TimeSeriesSplit
-import sift
-
-# Time series split - respects temporal ordering
-result = sift.catboost_select(
-    X, y, K=20,
-    cv=TimeSeriesSplit(n_splits=5),
-    algorithm='forward',  # Fast forward selection
+# Class-based API (sklearn compatible)
+selector = StabilitySelector(
+    threshold=0.6,
+    n_bootstrap=50,
+    task="regression",
+    random_state=42
 )
+selector.fit(X, y)
+X_selected = selector.transform(X)
+print(f"Selected features: {selector.get_support()}")
 ```
 
-**Grouped Data (NBA Players Across Seasons)**
-
-```python
-from sklearn.model_selection import GroupKFold
-import sift
-
-# Group-aware split - no player appears in both train and val
-result = sift.catboost_select(
-    X, y, K=20,
-    cv=GroupKFold(n_splits=5),
-    group_col='player_id',
-)
-```
-
-**Group-Aware Bootstrap Stability**
+### CatBoost-based Selection
 
 ```python
 import sift
 
-# Bootstrap samples GROUPS, not rows - prevents leakage
-result = sift.catboost_select(
-    X, y, K=20,
-    group_col='player_id',
-    use_stability=True,
-    n_bootstrap=20,
-    stability_threshold=0.6,
-)
-print(result.stability_scores)  # Selection frequencies
-```
+# Simple API
+selected = sift.catboost_regression(X, y, k=15, algorithm="forward")
 
-**Fast Forward Selection**
-
-```python
-import sift
-
-# O(K) model fits - much faster than RFE
-selected = sift.catboost_regression(
-    X, y, K=20,
-    algorithm='forward',
-    prefilter_k=200,
-)
-```
-
-**True Greedy Forward Selection**
-
-```python
-import sift
-
-# O(K * n_features) fits - most principled but slowest
-selected = sift.catboost_regression(
-    X, y, K=10,  # Use for small K
-    algorithm='forward_greedy',
-    prefilter_k=50,  # Prefilter first to make feasible
-)
-```
-
-**Full Control with K Search**
-
-```python
-import sift
-
+# Full control with automatic K search
 result = sift.catboost_select(
     X, y,
-    task='regression',
-    K=None,                    # Search for optimal K
-    min_features=5,
-    n_splits=5,
-    eval_metric='RMSE',
-    prefilter_k=200,
-    verbose=True,
+    task="regression",
+    k=None,  # Search for optimal K
+    algorithm="shap",
+    prefilter_k=100,
+    verbose=True
 )
 
-print(result.selected_features)
-print(result.scores_by_k)
-print(result.feature_importances.head(10))
+print(f"Best K: {result.best_k}")
+print(f"Selected: {result.selected_features}")
+print(f"Scores by K: {result.scores_by_k}")
 
 # Get minimal feature set within 1% of best score
 parsimonious = result.features_within_tolerance(tolerance=0.01)
 ```
 
-**Algorithm Comparison**
+## Algorithms
 
-| Algorithm | Speed | Accuracy | Use When | Complexity |
-| --- | --- | --- | --- | --- |
-| forward | ⚡⚡⚡⚡ | ★★ | Fast exploration, time series | O(K) fits |
-| prediction | ⚡⚡⚡ | ★ | Quick RFE, large datasets | O(splits×steps) |
-| permutation | ⚡⚡ | ★★ | Production RFE | O(splits×steps) |
-| shap | ⚡ | ★★★ | Final feature set, interpretability | O(splits×steps) |
-| forward_greedy | 🐢 | ★★★ | Small K, final refinement | O(K×n_features) |
+### mRMR (Minimum Redundancy Maximum Relevance)
 
-**Key Features**
-
-- Custom CV splitter: pass any sklearn splitter via `cv=` parameter.
-- Forward selection: fast importance-based selection (O(K) fits).
-- Group-aware bootstrap: stability selection samples groups when `group_col` provided.
-- One-shot RFE: runs `select_features` once per split at `min_k`.
-- Prefilter inside CV: avoids data leakage.
-- Always explicit metrics: `eval_metric` and `loss_function` always set.
-- Feature aggregation: combines across splits by frequency + mean-rank.
-- Final model on full data: importance computed from model trained on all data.
-- Multi-class SHAP: properly handles multi-dimensional SHAP output.
-
-**Custom Splitter Examples**
+mRMR selects features that have high relevance to the target while minimizing redundancy among selected features.
 
 ```python
-# Time series (no shuffle, temporal order)
-from sklearn.model_selection import TimeSeriesSplit
-import numpy as np
-cv = TimeSeriesSplit(n_splits=5)
+from sift import select_mrmr
 
-# Group K-fold (each group in exactly one fold)
-from sklearn.model_selection import GroupKFold
-cv = GroupKFold(n_splits=5)
-
-# Leave-one-group-out
-from sklearn.model_selection import LeaveOneGroupOut
-cv = LeaveOneGroupOut()
-
-# Blocked time series (custom)
-class BlockedTimeSeriesSplit:
-    def __init__(self, n_splits=5, gap=0):
-        self.n_splits = n_splits
-        self.gap = gap
-
-    def split(self, X, y=None, groups=None):
-        n = len(X)
-        fold_size = n // (self.n_splits + 1)
-        for i in range(self.n_splits):
-            train_end = fold_size * (i + 1)
-            val_start = train_end + self.gap
-            val_end = val_start + fold_size
-            yield np.arange(train_end), np.arange(val_start, min(val_end, n))
-```
-
-### Smart sampling (for stability selection)
-
-Smart sampling is an optional, leverage-based subsampler that can reduce the
-data size before running stability selection. It works on pandas DataFrames
-and returns approximate inverse-probability weights internally, so you should
-not pass `sample_weight` when `use_smart_sampler=True`.
-
-```python
-import pandas as pd
-from sklearn.datasets import make_regression
-from sift import StabilitySelector, panel_config
-
-X, y = make_regression(n_samples=10000, n_features=40, n_informative=10, noise=0.3)
-df = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
-df["target"] = y
-df["user_id"] = [f"user_{i % 200}" for i in range(len(df))]
-df["timestamp"] = pd.date_range("2023-01-01", periods=len(df), freq="h")
-
-selector = StabilitySelector(
-    threshold=0.6,
-    use_smart_sampler=True,
-    sampler_config=panel_config("user_id", "timestamp", sample_frac=0.15),
-)
-selector.fit(df, y)
-```
-
-You can also call the sampler directly if you want access to the sampled
-DataFrame and its generated weights:
-
-```python
-from sift import smart_sample
-
-sampled = smart_sample(
-    df,
-    feature_cols=[f"f{i}" for i in range(40)],
-    y_col="target",
-    group_col="user_id",
-    time_col="timestamp",
-    sample_frac=0.15,
+selected = select_mrmr(
+    X, y, k=20,
+    task="regression",           # or "classification"
+    estimator="classic",         # "classic" or "gaussian" (regression only)
+    formula="quotient",          # "quotient" (rel/red) or "difference" (rel-red)
+    relevance="f",               # "f" (F-stat), "ks" (KS-test), "rf" (Random Forest)
+    top_m=250,                   # Pre-filter to top_m by relevance
+    verbose=True
 )
 ```
 
-### mRMR with Polars
+**Parameters:**
+- `estimator="classic"`: Uses F-statistic for relevance and Pearson correlation for redundancy
+- `estimator="gaussian"`: Fast Gaussian MI proxy via correlation (regression only)
+- `formula="quotient"`: score = relevance / mean(redundancy)
+- `formula="difference"`: score = relevance - mean(redundancy)
+
+### JMI / JMIM (Joint Mutual Information)
+
+JMI considers the joint information between candidate features, selected features, and the target.
 
 ```python
-import polars as pl
-import sift
+from sift import select_jmi, select_jmim
 
-data = [
-    (1.0, 1.0, 1.0, 7.0, 1.5, -2.3),
-    (2.0, None, 2.0, 7.0, 8.5, 6.7),
-    (2.0, None, 3.0, 7.0, -2.3, 4.4),
-    (3.0, 4.0, 3.0, 7.0, 0.0, 0.0),
-    (4.0, 5.0, 4.0, 7.0, 12.1, -5.2),
-]
-columns = ["target", "some_null", "feature", "constant", "other_feature", "another_feature"]
-
-df_polars = pl.DataFrame(data=data, schema=columns)
-selected = sift.polars.mrmr_regression(df=df_polars, target_column="target", K=2)
-```
-
-## Concepts and workflows
-
-### When to use each selector
-
-- **mRMR (and JMI/JMIM)**: Good default when you want a fast, greedy ranking of features
-  based on relevance and redundancy. Use `method="jmi"` or `method="jmim"` to emphasize
-  multivariate relevance over pairwise redundancy.
-- **CEFS+**: Useful when you need a minimal-optimal subset and want more explicit
-  balancing of relevance and redundancy for regression problems.
-- **Stability Selection**: Prefer this when you want robustness across resamples,
-  or you need a tunable tradeoff between sparsity and confidence in feature inclusion.
-
-### Data expectations
-
-- **Pandas inputs**: Most selectors accept `pandas.DataFrame` for features and
-  `pandas.Series` (or array-like) for targets.
-- **Polars inputs**: `sift.polars.mrmr_regression` supports `polars.DataFrame` and
-  a `target_column` name.
-- **Targets**: Classification targets should be discrete labels, regression targets
-  should be continuous.
-- **Missing values**: Prefer imputed or filtered datasets. For stability selection,
-  missing values can materially affect bootstrap results.
-
-### Output format
-
-Most selectors return a list of feature names (or indices) in ranked order. For
-stability selection, you can additionally inspect selection frequencies via the
-`StabilitySelector` object when using the class-based API.
-
-## API overview
-
-### mRMR / JMI / JMIM
-
-```python
-from sift import mrmr_classif, mrmr_regression
-
-# classification
-selected = mrmr_classif(
-    X,
-    y,
-    K=20,
-    method="mrmr",  # "jmi" or "jmim"
-    n_jobs=-1,
-    verbose=False,
+# JMI: score(f) = Σ I(f, s; y) - emphasizes multivariate relevance
+selected = select_jmi(
+    X, y, k=20,
+    task="regression",
+    estimator="auto",    # "gaussian", "binned", "ksg", "r2", or "auto"
+    relevance="f",
+    verbose=True
 )
 
-# regression
-selected = mrmr_regression(X, y, K=20, n_jobs=-1, verbose=False)
+# JMIM: score(f) = min I(f, s; y) - conservative variant
+selected = select_jmim(X, y, k=20, task="regression")
 ```
 
-**Key parameters**
+**Estimators:**
+- `"gaussian"`: Fast Gaussian copula MI proxy (regression only)
+- `"binned"`: Histogram-based MI estimation
+- `"ksg"`: Kraskov-Stögbauer-Grassberger nearest-neighbor estimator
+- `"r2"`: Quick MI proxy via R² transformation
+- `"auto"`: Automatically selects based on task
 
-- `K`: Number of features to select.
-- `method`: `"mrmr"`, `"jmi"`, or `"jmim"` for classification.
-- `n_jobs`: Parallelism for mutual information estimation.
-- `verbose`: Toggle progress reporting.
+### CEFS+ (Conditional Entropy Feature Selection)
 
-### CEFS+
+CEFS+ uses log-determinant Gaussian MI with efficient incremental updates. Regression only.
 
 ```python
-from sift import cefsplus_regression
+from sift import select_cefsplus
 
-selected = cefsplus_regression(
-    X,
-    y,
-    K=15,
-    n_jobs=-1,
-    verbose=False,
+selected = select_cefsplus(
+    X, y, k=20,
+    corr_prune=0.95,     # Prune highly correlated features
+    top_m=250,           # Pre-filter threshold
+    verbose=True
 )
 ```
-
-**Key parameters**
-
-- `K`: Number of features to select.
-- `n_jobs`: Parallelism for internal scoring.
-- `verbose`: Toggle progress reporting.
 
 ### Stability Selection
 
-```python
-from sift import stability_classif, stability_regression
+Stability selection identifies features that are consistently selected across bootstrap resamples.
 
-selected_cls = stability_classif(
-    X,
-    y,
-    K=20,
-    n_bootstrap=50,
-    threshold=0.5,
-    sample_fraction=0.75,
-    random_state=0,
-    verbose=False,
+```python
+from sift import StabilitySelector, stability_regression, stability_classif
+
+# Class-based API
+selector = StabilitySelector(
+    n_bootstrap=50,          # Number of bootstrap iterations
+    sample_frac=0.5,         # Fraction of samples per bootstrap
+    threshold=0.6,           # Minimum selection frequency
+    alpha=None,              # Regularization (None = auto via CV)
+    l1_ratio=1.0,            # 1.0 = Lasso, <1.0 = ElasticNet
+    task="regression",       # or "classification"
+    max_features=None,       # Optional cap on features
+    random_state=42
 )
 
-selected_reg = stability_regression(
-    X,
-    y,
-    K=20,
-    n_bootstrap=50,
-    threshold=0.5,
-    sample_fraction=0.75,
-    random_state=0,
-    verbose=False,
+selector.fit(X, y)
+
+# Get selected features
+features = selector.get_support(indices=False)  # Boolean mask
+feature_names = selector.get_support(indices=True)  # Names
+
+# Feature information
+info = selector.get_feature_info()  # DataFrame with frequencies, ranks
+
+# Coefficient stability (mean, std across bootstraps)
+coef_stability = selector.get_coef_stability()
+
+# Tune threshold via cross-validation
+best_threshold = selector.tune_threshold(X, y, thresholds=[0.4, 0.5, 0.6, 0.7])
+
+# Visualization
+selector.plot_frequencies(top_n=30)
+selector.plot_coef_distributions(top_n=12)
+```
+
+### Boruta
+
+Boruta is a wrapper method that creates shadow features and iteratively removes features that perform worse than random.
+
+```python
+from sift import BorutaSelector, select_boruta, select_boruta_shap
+
+# Function API
+selected = select_boruta(X, y, estimator="rf", max_iter=100, random_state=42)
+
+# SHAP-based variant
+selected = select_boruta_shap(X, y, estimator="lightgbm", max_iter=50)
+
+# Class-based API
+selector = BorutaSelector(estimator="rf", max_iter=100, random_state=42)
+selector.fit(X, y)
+X_selected = selector.transform(X)
+```
+
+### CatBoost-based Selection
+
+Wrapper-based selection using CatBoost with multiple algorithms.
+
+```python
+import sift
+from sklearn.model_selection import TimeSeriesSplit, GroupKFold
+
+# Simple APIs
+selected = sift.catboost_regression(X, y, k=20, algorithm="forward")
+selected = sift.catboost_classif(X, y, k=20, algorithm="shap")
+
+# Full control API
+result = sift.catboost_select(
+    X, y,
+    task="regression",
+    k=20,                              # Number of features (None = search)
+    algorithm="forward",               # Selection algorithm
+    cv=TimeSeriesSplit(n_splits=5),   # Custom CV splitter
+    eval_metric="RMSE",               # Evaluation metric
+    prefilter_k=100,                  # Two-stage pre-filtering
+    group_col="player_id",            # For group-aware bootstrap
+    use_stability=True,               # Enable stability selection
+    n_bootstrap=20,                   # Bootstrap iterations
+    stability_threshold=0.6,          # Selection frequency threshold
+    verbose=True
 )
 ```
 
-**Key parameters**
+**Algorithms:**
+| Algorithm | Speed | Description |
+|-----------|-------|-------------|
+| `forward` | Fast | Forward selection via iterative importance (O(K) fits) |
+| `forward_greedy` | Slow | True greedy forward selection (O(K×n_features) fits) |
+| `shap` | Medium | SHAP importance with RFE |
+| `permutation` | Medium | Loss-function-change importance with RFE |
+| `prediction` | Fast | Quick RFE via prediction changes |
 
-- `n_bootstrap`: Number of bootstrap resamples.
-- `threshold`: Minimum selection frequency for inclusion.
-- `sample_fraction`: Fraction of samples to draw per bootstrap.
-- `random_state`: Ensures reproducibility across runs.
+## Advanced Features
 
-### Class-based stability API
+### Automatic K Selection
+
+All main selectors support `k="auto"` for automatic feature count selection.
 
 ```python
+from sift import select_mrmr, AutoKConfig
+
+# Configure auto-k behavior
+config = AutoKConfig(
+    k_method="evaluate",      # "evaluate" (CV) or "elbow" (diminishing returns)
+    strategy="time_holdout",  # "time_holdout" or "group_cv"
+    metric="rmse",           # Evaluation metric
+    max_k=100,               # Maximum features to consider
+    min_k=5,                 # Minimum features
+    val_frac=0.2,            # Validation fraction (time_holdout)
+    n_splits=5,              # CV splits (group_cv)
+    elbow_min_rel_gain=0.02, # Elbow detection threshold
+    elbow_patience=3         # Elbow detection patience
+)
+
+# Use with time information
+selected = select_mrmr(
+    X, y, k="auto",
+    task="regression",
+    time=timestamps,          # Required for time_holdout
+    auto_k_config=config,
+    verbose=True
+)
+
+# Use with group information
+selected = select_mrmr(
+    X, y, k="auto",
+    task="regression",
+    groups=group_ids,         # Required for group_cv
+    auto_k_config=AutoKConfig(strategy="group_cv"),
+    verbose=True
+)
+```
+
+### Time Series Support
+
+SIFT provides comprehensive time-series support across all selectors.
+
+```python
+from sklearn.model_selection import TimeSeriesSplit
+import sift
+
+# Stability selection with block bootstrap
 from sift import StabilitySelector
 
 selector = StabilitySelector(
-    threshold=0.5,
     n_bootstrap=50,
-    sample_fraction=0.75,
-    random_state=0,
+    threshold=0.6,
+    task="regression",
+    random_state=42
 )
-selector.fit(X, y)
-selected = selector.get_support()
+
+# Block bootstrap respects temporal structure
+selector.fit(
+    X, y,
+    groups=player_ids,        # Group identifier
+    time=timestamps,          # Temporal ordering
+    block_size="auto",        # Auto-determined block size
+    block_method="moving"     # "moving", "circular", or "stationary"
+)
+
+# CatBoost with time series CV
+result = sift.catboost_select(
+    X, y, k=20,
+    cv=TimeSeriesSplit(n_splits=5),
+    algorithm="forward"
+)
+
+# Time-aware permutation importance
+from sift import permutation_importance
+
+importance = permutation_importance(
+    model, X, y,
+    permute_method="circular_shift",  # Preserves temporal structure
+    groups=group_ids,
+    n_repeats=10
+)
 ```
 
-Use the class-based API when you need more control (for example, toggling smart
-sampling, inspecting support scores, or reusing fitted selectors).
+**Permutation Methods:**
+- `"global"`: Standard random shuffle
+- `"within_group"`: Shuffle within groups
+- `"block"`: Block permutation within groups
+- `"circular_shift"`: Rotation within groups (preserves temporal structure)
 
-## Practical guidance
+### Grouped/Panel Data
 
-### Reproducibility
+For hierarchical data (e.g., players across seasons), SIFT supports group-aware operations.
 
-- Set `random_state` for stability selection and any randomness inside sampling
-  or resampling routines.
-- Keep `n_bootstrap` fixed when comparing different runs.
+```python
+from sklearn.model_selection import GroupKFold, LeaveOneGroupOut
+import sift
 
-### Performance tips
+# Group-aware CV for CatBoost
+result = sift.catboost_select(
+    X, y, k=20,
+    cv=GroupKFold(n_splits=5),
+    group_col="player_id"           # Column name in X
+)
 
-- Start with small `K` values and increase once you have a stable baseline.
-- Use `n_jobs=-1` to parallelize mutual information estimations.
-- When working with very wide datasets, consider running a coarse pre-filter
-  (e.g., variance threshold) before applying mRMR or CEFS+.
+# Group-resampled stability selection
+result = sift.catboost_select(
+    X, y, k=20,
+    group_col="player_id",
+    use_stability=True,
+    n_bootstrap=20,
+    stability_threshold=0.6
+)
+print(result.stability_scores)  # Selection frequencies
 
-### Categorical features
+# Stability selector with group bootstrap
+selector = StabilitySelector(n_bootstrap=50, threshold=0.6)
+selector.fit(X, y, groups=player_ids)  # Samples entire groups
+```
 
-If you have categorical features, install the `categorical` extra and ensure
-categories are encoded consistently. This helps avoid unstable mutual
-information estimates due to mixed data types.
+### Smart Sampling
 
-### Choosing `threshold` for stability selection
+For large datasets, smart sampling reduces data size while preserving information.
 
-A higher `threshold` yields a smaller, more conservative feature set; a lower
-threshold yields more features but with less certainty. Start around `0.5` and
-tune according to your downstream model’s tolerance for false positives.
+```python
+from sift import StabilitySelector, panel_config, cross_section_config, smart_sample
 
-## Project layout
+# Panel data configuration
+selector = StabilitySelector(
+    threshold=0.6,
+    use_smart_sampler=True,
+    sampler_config=panel_config(
+        group_col="user_id",
+        time_col="timestamp",
+        sample_frac=0.15
+    )
+)
+selector.fit(df, y)
 
-- `sift/`: core library code.
-- `tests/`: unit tests and regression tests.
-- `setup.py`: packaging metadata.
+# Direct smart sampling
+from sift import smart_sample
 
-## Development
+sampled_df = smart_sample(
+    df,
+    feature_cols=feature_names,
+    y_col="target",
+    group_col="user_id",
+    time_col="timestamp",
+    sample_frac=0.15
+)
+
+# Pre-configured samplers
+from sift import panel_config, cross_section_config
+
+# For temporal panel data
+config = panel_config("user_id", "timestamp", sample_frac=0.15)
+
+# For cross-sectional data
+config = cross_section_config(sample_frac=0.2)
+```
+
+### Categorical Features
+
+SIFT automatically detects and encodes categorical features.
+
+```python
+from sift import select_mrmr
+
+# Automatic detection from DataFrame dtypes
+selected = select_mrmr(
+    X, y, k=20,
+    task="regression",
+    cat_encoding="loo"  # Leave-one-out encoding (default)
+)
+
+# Explicit categorical features
+selected = select_mrmr(
+    X, y, k=20,
+    task="regression",
+    cat_features=["category_col", "string_col"],
+    cat_encoding="target"  # Target encoding
+)
+```
+
+**Encoding Options:**
+- `"none"`: No encoding (features must be numeric)
+- `"loo"`: Leave-one-out encoding (default)
+- `"target"`: Target encoding
+- `"james_stein"`: James-Stein encoding
+
+### Sample Weights
+
+All selectors support sample weights for handling imbalanced data or importance weighting.
+
+```python
+from sift import select_mrmr, StabilitySelector
+
+# Function API
+selected = select_mrmr(
+    X, y, k=20,
+    task="regression",
+    sample_weight=weights
+)
+
+# Class API
+selector = StabilitySelector(threshold=0.6)
+selector.fit(X, y, sample_weight=weights)
+```
+
+## Algorithm Selection Guide
+
+| Algorithm | Speed | Best For | Task Support |
+|-----------|-------|----------|--------------|
+| mRMR (classic) | Fast | Quick baseline, large datasets | Both |
+| mRMR (gaussian) | Very Fast | Regression with many features | Regression |
+| JMI | Medium | Multivariate interactions | Both |
+| JMIM | Medium | Conservative selection | Both |
+| CEFS+ | Medium | Minimal-optimal subset | Regression |
+| Stability | Medium | Robust selection, noisy data | Both |
+| Boruta | Slow | All-relevant features | Both |
+| CatBoost forward | Fast | Time series, quick exploration | Both |
+| CatBoost SHAP | Slow | Interpretability, accuracy | Both |
+
+**Recommendations:**
+
+1. **Start with mRMR**: Fast baseline, good default choice
+2. **Need robustness?** Use Stability Selection
+3. **Time series data?** Use CatBoost with TimeSeriesSplit or Stability with block bootstrap
+4. **Panel/grouped data?** Use group-aware bootstrap or GroupKFold
+5. **Want all relevant features?** Use Boruta
+6. **Need interpretability?** Use CatBoost SHAP
+7. **Very large datasets?** Use smart sampling + gaussian estimators
+
+## API Reference
+
+### Main Functions
+
+| Function | Description |
+|----------|-------------|
+| `select_mrmr(X, y, k, task, ...)` | Minimum Redundancy Maximum Relevance |
+| `select_jmi(X, y, k, task, ...)` | Joint Mutual Information |
+| `select_jmim(X, y, k, task, ...)` | JMI Maximization (conservative) |
+| `select_cefsplus(X, y, k, ...)` | Conditional Entropy Feature Selection+ |
+| `stability_regression(X, y, k, ...)` | Stability selection for regression |
+| `stability_classif(X, y, k, ...)` | Stability selection for classification |
+| `select_boruta(X, y, ...)` | Boruta feature selection |
+| `select_boruta_shap(X, y, ...)` | SHAP-based Boruta |
+| `catboost_regression(X, y, k, ...)` | CatBoost selection for regression |
+| `catboost_classif(X, y, k, ...)` | CatBoost selection for classification |
+| `catboost_select(X, y, ...)` | Full control CatBoost selection |
+
+### Classes
+
+| Class | Description |
+|-------|-------------|
+| `StabilitySelector` | Sklearn-compatible stability selector |
+| `BorutaSelector` | Sklearn-compatible Boruta selector |
+| `FeatureCache` | Cache for multi-target selection |
+| `AutoKConfig` | Configuration for automatic K selection |
+| `SmartSamplerConfig` | Configuration for smart sampling |
+| `CatBoostSelectionResult` | Result container for CatBoost selection |
+
+### Utility Functions
+
+| Function | Description |
+|----------|-------------|
+| `build_cache(X, ...)` | Build feature cache for repeated selection |
+| `select_cached(cache, y, k, ...)` | Select from cached features |
+| `permutation_importance(model, X, y, ...)` | Time-aware permutation importance |
+| `smart_sample(df, ...)` | Leverage-based smart sampling |
+| `panel_config(...)` | Create panel data sampler config |
+| `cross_section_config(...)` | Create cross-section sampler config |
+| `select_k_auto(...)` | Automatic K selection via CV |
+| `select_k_elbow(...)` | Automatic K selection via elbow method |
+| `compute_objective_for_path(...)` | Compute objective along feature path |
+
+## Project Structure
+
+```
+sift/
+├── __init__.py           # Public API exports
+├── api.py                # mRMR, JMI, JMIM, CEFS+ selection
+├── stability.py          # Stability selection
+├── boruta.py             # Boruta feature selection
+├── catboost.py           # CatBoost-based selection
+├── importance.py         # Permutation importance
+├── _preprocess.py        # Input validation, encoding
+├── _impute.py            # Missing value imputation
+├── _permute.py           # Permutation strategies
+├── estimators/           # MI and relevance estimators
+│   ├── relevance.py      # F-stat, KS, RF relevance
+│   ├── copula.py         # Gaussian copula, caching
+│   └── joint_mi.py       # JMI/JMIM MI estimators
+├── selection/            # Selection algorithms
+│   ├── cefsplus.py       # CEFS+ implementation
+│   ├── loops.py          # mRMR, JMI loops
+│   ├── auto_k.py         # Automatic K selection
+│   └── objective.py      # Objective computation
+└── sampling/             # Smart sampling
+    ├── smart.py          # Leverage-based sampling
+    └── anchors.py        # Anchor strategies
+```
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-python -m pip install -e ".[test]"
+# Development setup
+git clone https://github.com/kmedved/sift.git
+cd sift
+pip install -e ".[test]"
+
+# Run tests
 pytest
+
+# Run specific test file
+pytest tests/test_smoke.py -v
 ```
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+Copyright (c) 2023 Samuele Mazzanti
+
+## Acknowledgments
+
+SIFT implements algorithms from the feature selection literature:
+- mRMR: Peng et al. (2005) "Feature selection based on mutual information"
+- JMI/JMIM: Yang & Moody (1999), Bennasar et al. (2015)
+- CEFS: Brown et al. (2012) "Conditional likelihood maximisation"
+- Stability Selection: Meinshausen & Bühlmann (2010)
+- Boruta: Kursa & Rudnicki (2010)
